@@ -35,6 +35,34 @@
 - Plan을 구독 중인 OpenAI 계정
 - Discord Bot Token
 
+처음 한 번은 아래를 먼저 설치하세요:
+
+1. Rust와 Cargo 설치
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+2. Docker 설치
+   - macOS / Windows: Docker Desktop 설치: <https://docs.docker.com/desktop/>
+   - Linux: Docker Engine 설치: <https://docs.docker.com/engine/install/>
+
+```bash
+docker --version
+```
+
+3. Codex CLI 설치
+   - `npm` 명령이 없으면 먼저 Node.js LTS 설치: <https://nodejs.org/en/download>
+
+```bash
+npm install -g @openai/codex
+codex --version
+codex login
+```
+
 의존성 설치:
 
 ```bash

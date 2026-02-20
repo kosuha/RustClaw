@@ -34,6 +34,34 @@ Requirements:
 - OpenAI account (active plan)
 - Discord Bot Token
 
+Install prerequisites (first-time setup):
+
+1. Install Rust and Cargo.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+2. Install Docker.
+   - macOS / Windows: install Docker Desktop: <https://docs.docker.com/desktop/>
+   - Linux: install Docker Engine: <https://docs.docker.com/engine/install/>
+
+```bash
+docker --version
+```
+
+3. Install Codex CLI.
+   - Install Node.js LTS first if `npm` is not available: <https://nodejs.org/en/download>
+
+```bash
+npm install -g @openai/codex
+codex --version
+codex login
+```
+
 Install dependencies:
 
 ```bash
