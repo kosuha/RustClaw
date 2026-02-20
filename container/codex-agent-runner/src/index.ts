@@ -263,6 +263,8 @@ function normalizeReasoningEffort(raw: string | undefined): string {
     return 'medium';
   }
   switch (value) {
+    case 'none':
+    case 'minimal':
     case 'low':
     case 'medium':
     case 'high':
