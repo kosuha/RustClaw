@@ -136,35 +136,31 @@ cargo build --release
 cargo build --release
 ```
 
-2. 미리 준비된 서비스 템플릿을 복사합니다.
+2. 자동 설치 스크립트를 실행합니다 (권장).
 
 ```bash
-sudo cp docs/systemd/rust-claw.service /etc/systemd/system/rust-claw.service
+sudo ./scripts/install-systemd-service.sh
 ```
 
-3. `/etc/systemd/system/rust-claw.service`에서 아래 값을 수정합니다.
-   - `User=YOUR_LINUX_USER`
-   - `WorkingDirectory=/ABSOLUTE/PATH/TO/rust-claw`
-   - `EnvironmentFile=/ABSOLUTE/PATH/TO/rust-claw/.env`
-   - `ExecStart=/ABSOLUTE/PATH/TO/rust-claw/target/release/rust_claw run`
+값을 직접 지정하고 싶으면:
 
 ```bash
-sudo nano /etc/systemd/system/rust-claw.service
+sudo ./scripts/install-systemd-service.sh \
+  --user <linux_user> \
+  --project-root /absolute/path/to/rust-claw \
+  --service-name rust-claw
 ```
 
-4. 서비스 자동 시작/즉시 실행:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rust-claw
-```
-
-5. 상태와 로그 확인:
+3. 상태와 로그를 확인합니다.
 
 ```bash
 sudo systemctl status rust-claw --no-pager
 journalctl -u rust-claw -f
 ```
+
+4. 수동 방식이 필요하면:
+   - 템플릿 파일: `docs/systemd/rust-claw.service`
+   - 설치 위치: `/etc/systemd/system/rust-claw.service`
 
 ## 에이전트 사용법 (Discord)
 

@@ -139,35 +139,31 @@ Use this for production servers so rust-claw keeps running after SSH disconnect/
 cargo build --release
 ```
 
-2. Copy prepared service template.
+2. Run the auto installer (recommended).
 
 ```bash
-sudo cp docs/systemd/rust-claw.service /etc/systemd/system/rust-claw.service
+sudo ./scripts/install-systemd-service.sh
 ```
 
-3. Edit required fields in `/etc/systemd/system/rust-claw.service`.
-   - `User=YOUR_LINUX_USER`
-   - `WorkingDirectory=/ABSOLUTE/PATH/TO/rust-claw`
-   - `EnvironmentFile=/ABSOLUTE/PATH/TO/rust-claw/.env`
-   - `ExecStart=/ABSOLUTE/PATH/TO/rust-claw/target/release/rust_claw run`
+If you need custom values:
 
 ```bash
-sudo nano /etc/systemd/system/rust-claw.service
+sudo ./scripts/install-systemd-service.sh \
+  --user <linux_user> \
+  --project-root /absolute/path/to/rust-claw \
+  --service-name rust-claw
 ```
 
-4. Enable and start the service.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rust-claw
-```
-
-5. Check service status and logs.
+3. Check service status and logs.
 
 ```bash
 sudo systemctl status rust-claw --no-pager
 journalctl -u rust-claw -f
 ```
+
+4. Optional manual method:
+   - Template file: `docs/systemd/rust-claw.service`
+   - Install path: `/etc/systemd/system/rust-claw.service`
 
 ## Agent Usage (Discord)
 
