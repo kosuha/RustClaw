@@ -14,11 +14,25 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const SKILLS_FILE = path.join(IPC_DIR, 'current_skills.json');
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+
+type SkillSnapshotRow = {
+  groupFolder?: string;
+  name?: string;
+  source?: string;
+  enabled?: boolean;
+  path?: string;
+};
+
+type SkillSnapshotPayload = {
+  skills?: SkillSnapshotRow[];
+  lastSync?: string;
+};
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -32,6 +46,67 @@ function writeIpcFile(dir: string, data: object): string {
   fs.renameSync(tempPath, filepath);
 
   return filename;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestSkillsRefresh(targetGroupFolder?: string): Promise<void> {
+  const payload: Record<string, string> = {
+    type: 'refresh_skills',
+    timestamp: new Date().toISOString(),
+  };
+
+  if (isMain && targetGroupFolder) {
+    payload.targetGroupFolder = targetGroupFolder;
+  }
+
+  writeIpcFile(TASKS_DIR, payload);
+}
+
+function readSkillSnapshot(): SkillSnapshotPayload | null {
+  try {
+    if (!fs.existsSync(SKILLS_FILE)) {
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(SKILLS_FILE, 'utf-8')) as SkillSnapshotPayload;
+    if (!parsed || !Array.isArray(parsed.skills)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForSkillSnapshot(maxWaitMs = 2500): Promise<SkillSnapshotPayload | null> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < maxWaitMs) {
+    const snapshot = readSkillSnapshot();
+    if (snapshot) {
+      return snapshot;
+    }
+    await sleep(250);
+  }
+  return readSkillSnapshot();
+}
+
+function listableSkills(
+  snapshot: SkillSnapshotPayload,
+  targetGroupFolder?: string,
+): SkillSnapshotRow[] {
+  const rows = Array.isArray(snapshot.skills) ? snapshot.skills : [];
+  return rows.filter((row) => {
+    const rowGroup = row.groupFolder || groupFolder;
+    if (!isMain) {
+      return rowGroup === groupFolder;
+    }
+    if (!targetGroupFolder) {
+      return true;
+    }
+    return rowGroup === targetGroupFolder;
+  });
 }
 
 const server = new McpServer({
@@ -309,6 +384,115 @@ server.tool(
     } catch (err) {
       return { content: [{ type: 'text' as const, text: `Group refresh requested. (${err instanceof Error ? err.message : String(err)})` }] };
     }
+  },
+);
+
+server.tool(
+  'list_skills',
+  `List SKILL.md-based capabilities currently visible to this group.
+
+- Non-main groups: shows this group's skills only.
+- Main group: can show all groups, or filter with target_group_folder.`,
+  {
+    target_group_folder: z.string().optional().describe('(Main group only) Filter skills by group folder.'),
+  },
+  async (args) => {
+    const target = args.target_group_folder?.trim();
+    if (!isMain && target && target !== groupFolder) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can inspect another group\'s skills.' }],
+        isError: true,
+      };
+    }
+
+    await requestSkillsRefresh(target);
+    const snapshot = await waitForSkillSnapshot();
+    if (!snapshot) {
+      return { content: [{ type: 'text' as const, text: 'No skill snapshot available yet.' }] };
+    }
+
+    const skills = listableSkills(snapshot, target);
+    if (skills.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No skills found.' }] };
+    }
+
+    const formatted = skills
+      .map((skill) => {
+        const group = skill.groupFolder || groupFolder;
+        const name = (skill.name || '').trim() || '(unnamed)';
+        const source = skill.source || 'unknown';
+        const state = skill.enabled === false ? 'disabled' : 'enabled';
+        const location = skill.path ? ` @ ${skill.path}` : '';
+        const groupLabel = isMain ? ` [group: ${group}]` : '';
+        return `- ${name}${groupLabel} (${source}, ${state})${location}`;
+      })
+      .join('\n');
+
+    return {
+      content: [{ type: 'text' as const, text: `Skills${snapshot.lastSync ? ` (snapshot: ${snapshot.lastSync})` : ''}:\n${formatted}` }],
+    };
+  },
+);
+
+server.tool(
+  'enable_skill',
+  'Enable a skill for a group. Default target is the current group.',
+  {
+    skill_name: z.string().describe('Skill folder/name to enable (case-insensitive).'),
+    target_group_folder: z.string().optional().describe('(Main group only) Group folder to apply this setting to.'),
+  },
+  async (args) => {
+    const target = args.target_group_folder?.trim();
+    if (!isMain && target && target !== groupFolder) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can change another group\'s skills.' }],
+        isError: true,
+      };
+    }
+    const resolvedTarget = isMain && target ? target : groupFolder;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'enable_skill',
+      skillName: args.skill_name,
+      targetGroupFolder: resolvedTarget,
+      timestamp: new Date().toISOString(),
+    });
+    await requestSkillsRefresh(resolvedTarget);
+
+    return {
+      content: [{ type: 'text' as const, text: `Skill "${args.skill_name}" enabled for group "${resolvedTarget}".` }],
+    };
+  },
+);
+
+server.tool(
+  'disable_skill',
+  'Disable a skill for a group. Default target is the current group.',
+  {
+    skill_name: z.string().describe('Skill folder/name to disable (case-insensitive).'),
+    target_group_folder: z.string().optional().describe('(Main group only) Group folder to apply this setting to.'),
+  },
+  async (args) => {
+    const target = args.target_group_folder?.trim();
+    if (!isMain && target && target !== groupFolder) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can change another group\'s skills.' }],
+        isError: true,
+      };
+    }
+    const resolvedTarget = isMain && target ? target : groupFolder;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'disable_skill',
+      skillName: args.skill_name,
+      targetGroupFolder: resolvedTarget,
+      timestamp: new Date().toISOString(),
+    });
+    await requestSkillsRefresh(resolvedTarget);
+
+    return {
+      content: [{ type: 'text' as const, text: `Skill "${args.skill_name}" disabled for group "${resolvedTarget}".` }],
+    };
   },
 );
 

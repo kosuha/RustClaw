@@ -340,10 +340,19 @@ async fn process_task_payload(
             set_task_status_if_authorized(db, source_group, is_main, payload, TaskStatus::Active)
         }
         "cancel_task" => cancel_task_if_authorized(db, source_group, is_main, payload),
+        "enable_skill" => {
+            set_skill_enabled_if_authorized(orchestrator, db, source_group, is_main, payload, true)
+                .await
+        }
+        "disable_skill" => {
+            set_skill_enabled_if_authorized(orchestrator, db, source_group, is_main, payload, false)
+                .await
+        }
         "register_group" => {
             register_group_if_authorized(orchestrator, source_group, is_main, payload).await
         }
         "refresh_groups" => refresh_groups_if_authorized(orchestrator, source_group, is_main).await,
+        "refresh_skills" => refresh_skills_if_authorized(orchestrator, source_group).await,
         _ => Ok(()),
     }
 }
@@ -533,6 +542,57 @@ async fn refresh_groups_if_authorized(
         .refresh_runtime_snapshots(source_group)
         .await
         .map_err(|err| format!("refresh_groups failed: {err}"))
+}
+
+async fn set_skill_enabled_if_authorized(
+    orchestrator: &Orchestrator,
+    db: &Db,
+    source_group: &str,
+    is_main: bool,
+    payload: &Value,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(skill_name) = string_field(payload, &["skillName", "skill_name"]) else {
+        return Ok(());
+    };
+
+    let requested_group =
+        string_field(payload, &["targetGroupFolder", "target_group_folder"]).unwrap_or_default();
+    let target_group = if is_main {
+        if requested_group.is_empty() {
+            source_group.to_string()
+        } else {
+            requested_group
+        }
+    } else {
+        if !requested_group.is_empty() && requested_group != source_group {
+            return Ok(());
+        }
+        source_group.to_string()
+    };
+
+    db.set_skill_enabled(&target_group, &skill_name, enabled)
+        .map_err(|err| {
+            format!(
+                "failed to set skill state for {} in group {}: {}",
+                skill_name, target_group, err
+            )
+        })?;
+    orchestrator
+        .refresh_runtime_snapshots(source_group)
+        .await
+        .map_err(|err| format!("refresh skill snapshot failed: {err}"))?;
+    Ok(())
+}
+
+async fn refresh_skills_if_authorized(
+    orchestrator: &Orchestrator,
+    source_group: &str,
+) -> Result<(), String> {
+    orchestrator
+        .refresh_runtime_snapshots(source_group)
+        .await
+        .map_err(|err| format!("refresh_skills failed: {err}"))
 }
 
 fn string_field(payload: &Value, keys: &[&str]) -> Option<String> {
@@ -899,6 +959,33 @@ mod tests {
         .await
         .expect("schedule task");
 
+        process_task_payload(
+            &orchestrator,
+            &db,
+            "other",
+            false,
+            &json!({
+                "type":"disable_skill",
+                "skillName":"research",
+                "targetGroupFolder":"main"
+            }),
+        )
+        .await
+        .expect("disable cross-group skill");
+
+        process_task_payload(
+            &orchestrator,
+            &db,
+            "other",
+            false,
+            &json!({
+                "type":"disable_skill",
+                "skillName":"research"
+            }),
+        )
+        .await
+        .expect("disable own-group skill");
+
         let main_after = db
             .get_task_by_id("task-main")
             .expect("get task")
@@ -907,6 +994,13 @@ mod tests {
 
         let all_tasks = db.get_all_tasks().expect("get all tasks");
         assert_eq!(all_tasks.len(), 1);
+
+        let main_skills = db.get_skill_settings("main").expect("main skill settings");
+        assert!(!main_skills.contains_key("research"));
+        let other_skills = db
+            .get_skill_settings("other")
+            .expect("other skill settings");
+        assert_eq!(other_skills.get("research"), Some(&false));
 
         let sent = outbound.messages.lock().expect("messages lock");
         assert_eq!(sent.len(), 1);
@@ -981,6 +1075,8 @@ mod tests {
 
         let snapshot_path = ipc_base.join("main").join("available_groups.json");
         assert!(snapshot_path.exists());
+        let skills_snapshot = ipc_base.join("main").join("current_skills.json");
+        assert!(skills_snapshot.exists());
     }
 
     #[test]

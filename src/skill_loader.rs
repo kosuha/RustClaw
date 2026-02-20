@@ -9,7 +9,7 @@ pub enum SkillSource {
 }
 
 impl SkillSource {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             SkillSource::Global => "global",
             SkillSource::Group => "group",

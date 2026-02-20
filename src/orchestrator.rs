@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
@@ -15,7 +15,9 @@ use tokio::sync::Mutex;
 use crate::db::{Db, DbError};
 use crate::group_queue::GroupQueue;
 use crate::router::{format_messages_with_skills, format_outbound};
-use crate::skill_loader::{SkillLoaderConfig, load_group_skills, render_skill_instructions};
+use crate::skill_loader::{
+    LoadedSkill, SkillLoaderConfig, load_group_skills, render_skill_instructions,
+};
 use crate::task_scheduler::TaskExecution;
 use crate::types::{ContextMode, NewMessage, RegisteredGroup, ScheduledTask};
 
@@ -200,8 +202,30 @@ impl Orchestrator {
             max_bytes_per_skill: self.config.skill_max_bytes,
         };
 
+        let settings = match self.db.get_skill_settings(group_folder) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!(
+                    "failed to load skill settings for group {}: {}",
+                    group_folder, err
+                );
+                HashMap::new()
+            }
+        };
+
         match load_group_skills(&self.config.groups_dir, group_folder, &config) {
-            Ok(skills) => render_skill_instructions(&skills),
+            Ok(skills) => {
+                let enabled = skills
+                    .into_iter()
+                    .filter(|skill| {
+                        settings
+                            .get(&skill.name.to_ascii_lowercase())
+                            .copied()
+                            .unwrap_or(true)
+                    })
+                    .collect::<Vec<_>>();
+                render_skill_instructions(&enabled)
+            }
             Err(err) => {
                 eprintln!("failed to load skills for group {}: {}", group_folder, err);
                 None
@@ -226,6 +250,85 @@ impl Orchestrator {
 </skills>\n\n\
 {prompt}"
         )
+    }
+
+    fn snapshot_group_folders(
+        &self,
+        source_group: &str,
+        is_main: bool,
+    ) -> Result<Vec<String>, String> {
+        if !is_main {
+            return Ok(vec![source_group.to_string()]);
+        }
+
+        let mut seen = HashSet::<String>::new();
+        let mut folders = Vec::<String>::new();
+        if seen.insert(source_group.to_string()) {
+            folders.push(source_group.to_string());
+        }
+
+        let registered = self
+            .db
+            .get_all_registered_groups()
+            .map_err(|err| format!("failed to load registered groups for skill snapshot: {err}"))?;
+        for group in registered.values() {
+            if seen.insert(group.folder.clone()) {
+                folders.push(group.folder.clone());
+            }
+        }
+        folders.sort();
+        Ok(folders)
+    }
+
+    fn build_skill_snapshots(
+        &self,
+        source_group: &str,
+        is_main: bool,
+    ) -> Result<Vec<SkillSnapshot>, String> {
+        let group_folders = self.snapshot_group_folders(source_group, is_main)?;
+        let config = SkillLoaderConfig {
+            max_skills: self.config.skill_max_count,
+            max_bytes_per_skill: self.config.skill_max_bytes,
+        };
+
+        let mut snapshots = Vec::<SkillSnapshot>::new();
+        for group_folder in group_folders {
+            let settings = self.db.get_skill_settings(&group_folder).map_err(|err| {
+                format!("failed to load skill settings for {group_folder}: {err}")
+            })?;
+            let skills = load_group_skills(&self.config.groups_dir, &group_folder, &config)
+                .map_err(|err| format!("failed to load skills for {group_folder}: {err}"))?;
+
+            snapshots.extend(skills.into_iter().map(|skill| {
+                let enabled = settings
+                    .get(&skill.name.to_ascii_lowercase())
+                    .copied()
+                    .unwrap_or(true);
+                let path = self.skill_path_for_snapshot(&skill);
+                SkillSnapshot {
+                    group_folder: group_folder.clone(),
+                    name: skill.name,
+                    source: skill.source.as_str().to_string(),
+                    enabled,
+                    path,
+                }
+            }));
+        }
+
+        snapshots.sort_by(|left, right| {
+            left.group_folder
+                .cmp(&right.group_folder)
+                .then(left.name.cmp(&right.name))
+        });
+        Ok(snapshots)
+    }
+
+    fn skill_path_for_snapshot(&self, skill: &LoadedSkill) -> String {
+        skill
+            .path
+            .strip_prefix(&self.config.groups_dir)
+            .map(|relative| relative.to_string_lossy().to_string())
+            .unwrap_or_else(|_| skill.path.to_string_lossy().to_string())
     }
 
     pub async fn register_group(&self, jid: &str, group: RegisteredGroup) -> Result<(), DbError> {
@@ -854,6 +957,17 @@ impl Orchestrator {
         fs::write(groups_file, groups_json)
             .map_err(|err| format!("failed to write available groups snapshot: {err}"))?;
 
+        let skill_snapshots = self.build_skill_snapshots(group_folder, is_main)?;
+        let skills_snapshot = SkillsSnapshot {
+            skills: skill_snapshots,
+            last_sync: chrono::Utc::now().to_rfc3339(),
+        };
+        let skills_file = group_ipc_dir.join("current_skills.json");
+        let skills_json = serde_json::to_string_pretty(&skills_snapshot)
+            .map_err(|err| format!("failed to serialize skill snapshots: {err}"))?;
+        fs::write(skills_file, skills_json)
+            .map_err(|err| format!("failed to write skill snapshots: {err}"))?;
+
         Ok(())
     }
 
@@ -993,6 +1107,23 @@ struct AvailableGroupSnapshot {
 #[derive(serde::Serialize)]
 struct GroupsSnapshot {
     groups: Vec<AvailableGroupSnapshot>,
+    #[serde(rename = "lastSync")]
+    last_sync: String,
+}
+
+#[derive(serde::Serialize)]
+struct SkillSnapshot {
+    #[serde(rename = "groupFolder")]
+    group_folder: String,
+    name: String,
+    source: String,
+    enabled: bool,
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct SkillsSnapshot {
+    skills: Vec<SkillSnapshot>,
     #[serde(rename = "lastSync")]
     last_sync: String,
 }
@@ -1274,6 +1405,52 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert!(captured[0].contains("<skills>"));
         assert!(captured[0].contains("Always include concise source notes when relevant."));
+    }
+
+    #[tokio::test]
+    async fn process_group_messages_respects_disabled_skill_setting() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::open(temp_dir.path().join("messages.db")).expect("db open");
+        db.set_registered_group("group@g.us", &sample_group())
+            .expect("set group");
+        db.store_chat_metadata("group@g.us", "2026-02-19T00:00:01.000Z", Some("Dev Group"))
+            .expect("store chat metadata");
+        db.store_message(&message("1", "@Andy hello", "2026-02-19T00:00:01.000Z"))
+            .expect("store message");
+        db.set_skill_enabled("dev", "research", false)
+            .expect("disable skill");
+
+        let groups_dir = temp_dir.path().join("groups");
+        write_skill(
+            &groups_dir,
+            "dev",
+            "research",
+            "Always include concise source notes when relevant.",
+        );
+
+        let runner = CapturePromptRunner::default();
+        let prompts = runner.prompts.clone();
+        let orchestrator = Orchestrator::create(
+            db,
+            OrchestratorConfig {
+                groups_dir,
+                ..OrchestratorConfig::default()
+            },
+            Arc::new(runner),
+            Arc::new(MockOutbound::default()),
+        )
+        .await
+        .expect("create orchestrator");
+
+        let success = orchestrator
+            .process_group_messages("group@g.us".to_string())
+            .await;
+        assert!(success);
+
+        let captured = prompts.lock().expect("captured prompts lock");
+        assert_eq!(captured.len(), 1);
+        assert!(!captured[0].contains("<skills>"));
+        assert!(!captured[0].contains("Always include concise source notes when relevant."));
     }
 
     #[tokio::test]

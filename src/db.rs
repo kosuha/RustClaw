@@ -514,6 +514,53 @@ impl Db {
         })
     }
 
+    pub fn get_skill_settings(&self, group_folder: &str) -> Result<HashMap<String, bool>, DbError> {
+        self.with_connection(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT skill_name, enabled
+                 FROM group_skill_settings
+                 WHERE group_folder = ?",
+            )?;
+            let rows = statement
+                .query_map(params![group_folder], |row| {
+                    let name: String = row.get("skill_name")?;
+                    let enabled: i64 = row.get("enabled")?;
+                    Ok((name, enabled == 1))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows.into_iter().collect())
+        })
+    }
+
+    pub fn set_skill_enabled(
+        &self,
+        group_folder: &str,
+        skill_name: &str,
+        enabled: bool,
+    ) -> Result<(), DbError> {
+        let normalized = normalize_skill_name(skill_name);
+        if normalized.is_empty() {
+            return Ok(());
+        }
+
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO group_skill_settings (group_folder, skill_name, enabled, updated_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(group_folder, skill_name) DO UPDATE SET
+                   enabled = excluded.enabled,
+                   updated_at = excluded.updated_at",
+                params![
+                    group_folder,
+                    normalized,
+                    if enabled { 1 } else { 0 },
+                    to_iso8601(Utc::now()),
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
     fn with_connection<T, F>(&self, f: F) -> Result<T, DbError>
     where
         F: FnOnce(&Connection) -> Result<T, DbError>,
@@ -597,6 +644,16 @@ fn create_schema(connection: &Connection) -> Result<(), DbError> {
           container_config TEXT,
           requires_trigger INTEGER DEFAULT 1
         );
+
+        CREATE TABLE IF NOT EXISTS group_skill_settings (
+          group_folder TEXT NOT NULL,
+          skill_name TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (group_folder, skill_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_group_skill_settings_group
+          ON group_skill_settings(group_folder);
         ",
     )?;
     Ok(())
@@ -766,6 +823,10 @@ fn wrap_conversion_error(error: DbError) -> rusqlite::Error {
 
 fn to_iso8601(datetime: DateTime<Utc>) -> String {
     datetime.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn normalize_skill_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -981,6 +1042,21 @@ mod tests {
             db.get_last_group_sync().expect("load sync").as_deref(),
             Some("2026-02-19T12:00:00.000Z")
         );
+    }
+
+    #[test]
+    fn skill_settings_roundtrip_normalizes_name_and_updates_state() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(dir.path().join("messages.db")).expect("open db");
+
+        db.set_skill_enabled("main", "Research", false)
+            .expect("disable skill");
+        db.set_skill_enabled("main", "  research  ", true)
+            .expect("enable skill");
+
+        let settings = db.get_skill_settings("main").expect("get settings");
+        assert_eq!(settings.len(), 1);
+        assert_eq!(settings.get("research"), Some(&true));
     }
 
     #[test]
