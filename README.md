@@ -41,7 +41,9 @@ cp .env.example .env
 Required:
 
 - `DISCORD_BOT_TOKEN`
-- `AUTO_REGISTER_MAIN_JID` (recommended for first run in Discord mode)
+- `AUTO_REGISTER_MAIN_JID` (first run in Discord mode)
+: Format is `<discord_channel_id>@discord` (example: `123456789012345678@discord`).
+: Get channel ID in Discord: `Settings -> Advanced -> Developer Mode ON`, then right-click the channel and click `Copy Channel ID`.
 
 Optional (recommended):
 

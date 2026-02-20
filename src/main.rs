@@ -296,6 +296,7 @@ async fn run_daemon() -> Result<(), String> {
 
     let db = open_db_with_json_migration()?;
     maybe_auto_register_main_group(&db, &assistant_name, &main_group_folder)?;
+    ensure_discord_registration_ready(&db, &outbound_sender_mode)?;
     let agent_runner = build_agent_runner(&agent_runner_mode)?;
     let mut runtime_channel: Option<RuntimeChannel> = None;
     let outbound_sender: Arc<dyn OutboundSender> = if outbound_sender_mode == "discord" {
@@ -754,9 +755,14 @@ fn maybe_auto_register_main_group(
     assistant_name: &str,
     main_group_folder: &str,
 ) -> Result<(), String> {
-    let Some(main_jid) = read_env("AUTO_REGISTER_MAIN_JID") else {
+    let Some(main_jid) = configured_main_jid() else {
         return Ok(());
     };
+    if !main_jid.ends_with("@discord") {
+        return Err(
+            "AUTO_REGISTER_MAIN_JID must use '<discord_channel_id>@discord' format".to_string(),
+        );
+    }
 
     let existing = db
         .get_registered_group(&main_jid)
@@ -780,6 +786,33 @@ fn maybe_auto_register_main_group(
         main_jid, group.folder
     );
     Ok(())
+}
+
+fn ensure_discord_registration_ready(db: &Db, outbound_sender_mode: &str) -> Result<(), String> {
+    if outbound_sender_mode != "discord" {
+        return Ok(());
+    }
+    if configured_main_jid().is_some() {
+        return Ok(());
+    }
+
+    let registered = db
+        .get_all_registered_groups()
+        .map_err(|err| format!("failed to check registered groups: {err}"))?;
+    if !registered.is_empty() {
+        return Ok(());
+    }
+
+    Err(
+        "Discord mode requires a registered group. Set AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord in .env, or run 'cargo run -- bootstrap-main --jid <discord_channel_id>@discord' once."
+            .to_string(),
+    )
+}
+
+fn configured_main_jid() -> Option<String> {
+    read_env("AUTO_REGISTER_MAIN_JID")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_timestamp(raw: &str) -> Result<DateTime<Utc>, String> {

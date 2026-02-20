@@ -41,7 +41,9 @@ cp .env.example .env
 필수:
 
 - `DISCORD_BOT_TOKEN`
-- `AUTO_REGISTER_MAIN_JID` (Discord 모드 첫 실행 권장)
+- `AUTO_REGISTER_MAIN_JID` (Discord 모드 첫 실행)
+: 형식은 `<discord_channel_id>@discord` 입니다 (예: `123456789012345678@discord`).
+: Discord 채널 ID 확인: `설정 -> 고급 -> 개발자 모드 ON` 후, 채널 우클릭 -> `채널 ID 복사`.
 
 선택(권장):
 
