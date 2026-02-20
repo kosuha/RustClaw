@@ -22,6 +22,7 @@ use crate::types::AdditionalMount;
 const RUNTIME_OPTIONAL_ENV_KEYS: &[&str] = &[
     "CODEX_MODEL",
     "CODEX_REASONING_EFFORT",
+    "TIMEZONE",
     "CODEX_APPROVAL_POLICY",
     "CODEX_SANDBOX_MODE",
     "CODEX_ENABLE_SEARCH",
@@ -590,10 +591,18 @@ fn collect_allowed_container_envs() -> Vec<(String, String)> {
 }
 
 fn collect_runtime_option_envs() -> Vec<(String, String)> {
-    RUNTIME_OPTIONAL_ENV_KEYS
+    let mut envs = RUNTIME_OPTIONAL_ENV_KEYS
         .iter()
         .filter_map(|key| read_env_var(key).map(|value| ((*key).to_string(), value)))
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>();
+
+    if let Some((_, timezone)) = envs.iter().find(|(key, _)| key == "TIMEZONE") {
+        if !envs.iter().any(|(key, _)| key == "TZ") {
+            envs.push(("TZ".to_string(), timezone.clone()));
+        }
+    }
+
+    envs
 }
 
 fn allowed_credential_keys() -> Vec<String> {

@@ -709,11 +709,8 @@ fn next_cron_run(
 }
 
 fn resolve_task_timezone() -> TaskTimezone {
-    // NanoClaw parity: center timezone config on TIMEZONE/TZ.
-    // Keep TASK_TIMEZONE as a legacy fallback for existing deployments.
-    let raw_timezone = read_env_var("TIMEZONE")
-        .or_else(|| read_env_var("TZ"))
-        .or_else(|| read_env_var("TASK_TIMEZONE"));
+    // Use a single timezone key for predictable deployment behavior.
+    let raw_timezone = read_env_var("TIMEZONE");
     resolve_task_timezone_from_sources(
         raw_timezone,
         iana_time_zone::get_timezone().ok(),
