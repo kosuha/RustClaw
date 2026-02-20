@@ -45,8 +45,9 @@ Required:
 
 Optional (recommended):
 
-- `OPENAI_API_KEY`
 - `CODEX_AUTH_DIR` (default: `~/.codex`)
+
+By default, no API keys are passed into agent containers.
 
 If you do not set `AUTO_REGISTER_MAIN_JID`, register a main group manually before use:
 

@@ -19,7 +19,6 @@ use crate::orchestrator::{
 };
 use crate::types::AdditionalMount;
 
-const DEFAULT_ALLOWED_CREDENTIAL_KEYS: &[&str] = &["OPENAI_API_KEY"];
 const RUNTIME_OPTIONAL_ENV_KEYS: &[&str] = &[
     "CODEX_MODEL",
     "CODEX_APPROVAL_POLICY",
@@ -597,18 +596,25 @@ fn collect_runtime_option_envs() -> Vec<(String, String)> {
 }
 
 fn allowed_credential_keys() -> Vec<String> {
-    let mut keys = DEFAULT_ALLOWED_CREDENTIAL_KEYS
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
+    let Some(raw) = read_env_var("CONTAINER_ALLOWED_CREDENTIAL_KEYS_JSON") else {
+        return Vec::new();
+    };
 
-    if let Some(raw) = read_env_var("CONTAINER_ALLOWED_CREDENTIAL_KEYS_JSON") {
-        if let Ok(extra) = serde_json::from_str::<Vec<String>>(&raw) {
-            for key in extra {
-                if !keys.iter().any(|existing| existing == &key) {
-                    keys.push(key);
-                }
-            }
+    parse_allowed_credential_keys(&raw)
+}
+
+fn parse_allowed_credential_keys(raw: &str) -> Vec<String> {
+    let Ok(extra) = serde_json::from_str::<Vec<String>>(raw) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for key in extra
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
         }
     }
 
@@ -752,7 +758,7 @@ mod tests {
         let args = runner.build_container_args(
             &mounts,
             "ct-1",
-            &[("OPENAI_API_KEY".to_string(), "secret".to_string())],
+            &[("MY_API_KEY".to_string(), "secret".to_string())],
         );
         assert_eq!(
             args,
@@ -763,7 +769,7 @@ mod tests {
                 "--name",
                 "ct-1",
                 "-e",
-                "OPENAI_API_KEY=secret",
+                "MY_API_KEY=secret",
                 "-v",
                 "/h/rw:/c/rw",
                 "--mount",
@@ -771,6 +777,17 @@ mod tests {
                 "image:latest",
             ]
         );
+    }
+
+    #[test]
+    fn parse_allowed_credential_keys_returns_empty_for_invalid_json() {
+        assert!(parse_allowed_credential_keys("not-json").is_empty());
+    }
+
+    #[test]
+    fn parse_allowed_credential_keys_deduplicates_and_trims() {
+        let keys = parse_allowed_credential_keys(r#"[" MY_KEY ","", "MY_KEY", "SECOND_KEY"]"#);
+        assert_eq!(keys, vec!["MY_KEY".to_string(), "SECOND_KEY".to_string()]);
     }
 
     #[test]

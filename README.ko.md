@@ -45,8 +45,9 @@ cp .env.example .env
 
 선택(권장):
 
-- `OPENAI_API_KEY`
 - `CODEX_AUTH_DIR` (기본값: `~/.codex`)
+
+기본값으로는 API 키를 에이전트 컨테이너에 전달하지 않습니다.
 
 `AUTO_REGISTER_MAIN_JID`를 설정하지 않으면, 사용 전에 메인 그룹을 수동 등록해야 합니다:
 
