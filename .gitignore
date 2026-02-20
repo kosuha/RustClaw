@@ -1,0 +1,15 @@
+reference/
+
+# Added by cargo
+
+/target
+/store
+/data
+/logs
+/groups/
+
+.env
+container/codex-agent-runner/node_modules/
+container/codex-agent-runner/dist/
+
+AGENTS.md

@@ -1,0 +1,21 @@
+[package]
+name = "rust_claw"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"
+clap = { version = "4.5.53", features = ["derive"] }
+cron = "0.15.0"
+iana-time-zone = "0.1.64"
+regex = "1.12.1"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+serenity = { version = "0.12.4", default-features = false, features = ["client", "gateway", "model", "rustls_backend", "http"] }
+tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+fs2 = "0.4.3"
+
+[dev-dependencies]
+tempfile = "3.23.0"

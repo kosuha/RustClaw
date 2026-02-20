@@ -1,0 +1,7 @@
+- NEVER read .env file. (instead read .env.example file)
+- Think before you write code.
+- Simplicity is key.
+- Code maintainability and reusability are important.
+- Always consider the project goals before you act.
+- 한가지 기능 구현이 끝나면 반드시 git commit을 해서 기록해라.
+- 모르면 물어보거나 웹 검색으로 찾아라
