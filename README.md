@@ -169,6 +169,13 @@ sudo systemctl restart rust-claw
 sudo systemctl disable rust-claw
 ```
 
+If you changed settings (for example `.env`) or code, rebuild and restart:
+
+```bash
+cargo build --release
+sudo systemctl restart rust-claw
+```
+
 If you started with `cargo run -- run` in a terminal, press `Ctrl+C` to stop.
 
 5. Optional manual method:

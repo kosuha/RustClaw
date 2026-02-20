@@ -166,6 +166,13 @@ sudo systemctl restart rust-claw
 sudo systemctl disable rust-claw
 ```
 
+설정(예: `.env`)이나 코드를 바꿨다면 다시 빌드 후 재시작하세요:
+
+```bash
+cargo build --release
+sudo systemctl restart rust-claw
+```
+
 터미널에서 `cargo run -- run`으로 직접 실행했다면 `Ctrl+C`로 종료합니다.
 
 5. 수동 방식이 필요하면:
