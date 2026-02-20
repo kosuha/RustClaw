@@ -687,7 +687,7 @@ fn build_discord_channel(assistant_name: &str) -> Result<DiscordChannel, String>
         bot_token,
         reconnect_delay: Duration::from_millis(read_u64("DISCORD_RECONNECT_DELAY_MS", 5_000)),
         assistant_name: assistant_name.to_string(),
-        prefix_outbound: read_bool("DISCORD_PREFIX_OUTBOUND", true),
+        prefix_outbound: read_bool("DISCORD_PREFIX_OUTBOUND", false),
     }))
 }
 
