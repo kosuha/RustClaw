@@ -177,6 +177,10 @@ If you started with `cargo run -- run` in a terminal, press `Ctrl+C` to stop.
 
 ## Agent Usage (Discord)
 
+Important:
+- RustClaw replies only in **registered channels**.
+- If a channel is not registered, it is ignored even if you send mentions there.
+
 1. Make sure a main channel is registered.
    - Recommended: set `AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord` in `.env`.
    - Or register once manually:
@@ -185,21 +189,39 @@ If you started with `cargo run -- run` in a terminal, press `Ctrl+C` to stop.
 cargo run -- bootstrap-main --jid <discord_channel_id>@discord
 ```
 
-2. Start the app:
+2. Register every additional Discord channel you want to use.
+
+```bash
+cargo run -- register-group \
+  --jid <discord_channel_id>@discord \
+  --name "General" \
+  --folder general \
+  --trigger @Andy \
+  --requires-trigger true
+```
+
+3. Verify registration:
+
+```bash
+cargo run -- list-groups
+```
+
+4. Start the app:
 
 ```bash
 cargo run -- run
 ```
 
-3. Send messages:
+5. Send messages:
    - Main channel (`folder=main`): normal messages are enough.
    - Non-main channel (default): message must start with `@<ASSISTANT_NAME>`.
+   - Trigger check is a plain text prefix check (`@Andy ...`), so put it at the start.
 
-4. Trigger examples (when `ASSISTANT_NAME=Andy`):
+6. Trigger examples (when `ASSISTANT_NAME=Andy`):
    - Works: `@Andy summarize this thread`
    - Ignored: `please @Andy summarize this thread`
 
-5. If you want a non-main channel to work without a trigger, register it with `--requires-trigger false`.
+7. If you want a non-main channel to work without a trigger, register it with `--requires-trigger false`.
 
 ## CLI Admin Usage
 

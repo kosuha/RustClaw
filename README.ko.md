@@ -174,6 +174,10 @@ sudo systemctl disable rust-claw
 
 ## 에이전트 사용법 (Discord)
 
+중요:
+- RustClaw는 **등록된 채널에서만** 답변합니다.
+- 등록되지 않은 채널은 멘션해도 무시됩니다.
+
 1. 먼저 메인 채널이 등록되어 있어야 합니다.
    - 권장: `.env`에 `AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord` 설정
    - 또는 1회 수동 등록:
@@ -182,21 +186,39 @@ sudo systemctl disable rust-claw
 cargo run -- bootstrap-main --jid <discord_channel_id>@discord
 ```
 
-2. 앱 실행:
+2. 사용할 일반 채널도 각각 등록합니다.
+
+```bash
+cargo run -- register-group \
+  --jid <discord_channel_id>@discord \
+  --name "General" \
+  --folder general \
+  --trigger @Andy \
+  --requires-trigger true
+```
+
+3. 등록 확인:
+
+```bash
+cargo run -- list-groups
+```
+
+4. 앱 실행:
 
 ```bash
 cargo run -- run
 ```
 
-3. 메시지 보내기:
+5. 메시지 보내기:
    - 메인 채널(`folder=main`): 일반 메시지로 바로 동작
    - 일반 채널(기본값): 메시지 맨 앞에 `@<ASSISTANT_NAME>`가 있어야 동작
+   - 트리거는 문자열 앞부분 검사이므로 `@Andy ...` 형태로 맨 앞에 써야 합니다.
 
-4. 트리거 예시 (`ASSISTANT_NAME=Andy`일 때):
+6. 트리거 예시 (`ASSISTANT_NAME=Andy`일 때):
    - 동작함: `@Andy 이 대화 요약해줘`
    - 무시됨: `이거 @Andy 요약해줘`
 
-5. 일반 채널도 트리거 없이 쓰고 싶다면 `--requires-trigger false`로 등록하세요.
+7. 일반 채널도 트리거 없이 쓰고 싶다면 `--requires-trigger false`로 등록하세요.
 
 ## CLI 관리자 사용법
 
