@@ -14,7 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::db::{Db, DbError};
 use crate::group_queue::GroupQueue;
-use crate::router::{format_messages, format_outbound};
+use crate::router::{format_messages_with_skills, format_outbound};
+use crate::skill_loader::{SkillLoaderConfig, load_group_skills, render_skill_instructions};
 use crate::task_scheduler::TaskExecution;
 use crate::types::{ContextMode, NewMessage, RegisteredGroup, ScheduledTask};
 
@@ -100,6 +101,9 @@ pub trait OutboundSender: Send + Sync {
 pub struct OrchestratorConfig {
     pub assistant_name: String,
     pub main_group_folder: String,
+    pub groups_dir: PathBuf,
+    pub skill_max_bytes: usize,
+    pub skill_max_count: usize,
     pub poll_interval: Duration,
     pub idle_timeout: Duration,
     pub ipc_base_dir: Option<PathBuf>,
@@ -108,9 +112,15 @@ pub struct OrchestratorConfig {
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
+        let groups_dir = std::env::current_dir()
+            .unwrap_or_else(|_| ".".into())
+            .join("groups");
         Self {
             assistant_name: "Andy".to_string(),
             main_group_folder: "main".to_string(),
+            groups_dir,
+            skill_max_bytes: 12_000,
+            skill_max_count: 8,
             poll_interval: Duration::from_millis(2_000),
             idle_timeout: Duration::from_millis(1_800_000),
             ipc_base_dir: None,
@@ -182,6 +192,40 @@ impl Orchestrator {
 
     pub async fn send_outbound_message(&self, chat_jid: &str, text: &str) -> Result<(), String> {
         self.outbound.send(chat_jid, text).await
+    }
+
+    fn load_skill_instructions_for_group(&self, group_folder: &str) -> Option<String> {
+        let config = SkillLoaderConfig {
+            max_skills: self.config.skill_max_count,
+            max_bytes_per_skill: self.config.skill_max_bytes,
+        };
+
+        match load_group_skills(&self.config.groups_dir, group_folder, &config) {
+            Ok(skills) => render_skill_instructions(&skills),
+            Err(err) => {
+                eprintln!("failed to load skills for group {}: {}", group_folder, err);
+                None
+            }
+        }
+    }
+
+    fn build_message_prompt(&self, group_folder: &str, messages: &[NewMessage]) -> String {
+        let skills = self.load_skill_instructions_for_group(group_folder);
+        format_messages_with_skills(messages, &self.config.assistant_name, skills.as_deref())
+    }
+
+    fn build_task_prompt(&self, group_folder: &str, prompt: &str) -> String {
+        let Some(skills) = self.load_skill_instructions_for_group(group_folder) else {
+            return prompt.to_string();
+        };
+
+        format!(
+            "Follow the active skill instructions when they are relevant.\n\
+<skills>\n\
+{skills}\n\
+</skills>\n\n\
+{prompt}"
+        )
     }
 
     pub async fn register_group(&self, jid: &str, group: RegisteredGroup) -> Result<(), DbError> {
@@ -294,7 +338,7 @@ impl Orchestrator {
             } else {
                 all_pending
             };
-            let prompt = format_messages(&messages_to_send, &self.config.assistant_name);
+            let prompt = self.build_message_prompt(&group.folder, &messages_to_send);
 
             if self.queue.send_message(&chat_jid, &prompt) {
                 let _ = self.outbound.set_typing(&chat_jid, true).await;
@@ -410,7 +454,7 @@ impl Orchestrator {
             );
         }
         let _ = self.outbound.set_typing(&chat_jid, true).await;
-        let prompt = format_messages(&pending_messages, &self.config.assistant_name);
+        let prompt = self.build_message_prompt(&group.folder, &pending_messages);
         let received_stream_event = Arc::new(AtomicBool::new(false));
         let output_sent_to_user = Arc::new(AtomicBool::new(false));
         let idle_timer = Arc::new(StdMutex::new(None));
@@ -659,7 +703,7 @@ impl Orchestrator {
             .run_with_callbacks(
                 AgentRunInput {
                     group: group.clone(),
-                    prompt: task.prompt.clone(),
+                    prompt: self.build_task_prompt(&task.group_folder, &task.prompt),
                     session_id,
                     group_folder: task.group_folder.clone(),
                     chat_jid: task.chat_jid.clone(),
@@ -1029,6 +1073,8 @@ impl OutboundSender for StdoutOutboundSender {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::sync::Mutex as StdMutex;
 
     use super::*;
@@ -1071,6 +1117,26 @@ mod tests {
                     .await;
                 }
                 Err("simulated stream failure".to_string())
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturePromptRunner {
+        prompts: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl AgentRunner for CapturePromptRunner {
+        fn run<'a>(&'a self, input: AgentRunInput) -> AgentRunFuture<'a> {
+            self.prompts
+                .lock()
+                .expect("capture prompts lock")
+                .push(input.prompt);
+            Box::pin(async move {
+                Ok(AgentRunOutput {
+                    result: Some("captured".to_string()),
+                    new_session_id: None,
+                })
             })
         }
     }
@@ -1121,6 +1187,16 @@ mod tests {
         }
     }
 
+    fn write_skill(groups_dir: &Path, group_folder: &str, skill_name: &str, content: &str) {
+        let skill_path = groups_dir
+            .join(group_folder)
+            .join("skills")
+            .join(skill_name)
+            .join("SKILL.md");
+        fs::create_dir_all(skill_path.parent().expect("skill parent")).expect("create skill dir");
+        fs::write(skill_path, content).expect("write skill");
+    }
+
     #[tokio::test]
     async fn process_group_messages_sends_output_when_trigger_present() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1154,6 +1230,50 @@ mod tests {
 
         let session = db.get_session("dev").expect("get session");
         assert_eq!(session.as_deref(), Some("codex:session-1"));
+    }
+
+    #[tokio::test]
+    async fn process_group_messages_injects_group_skill_instructions() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::open(temp_dir.path().join("messages.db")).expect("db open");
+        db.set_registered_group("group@g.us", &sample_group())
+            .expect("set group");
+        db.store_chat_metadata("group@g.us", "2026-02-19T00:00:01.000Z", Some("Dev Group"))
+            .expect("store chat metadata");
+        db.store_message(&message("1", "@Andy hello", "2026-02-19T00:00:01.000Z"))
+            .expect("store message");
+
+        let groups_dir = temp_dir.path().join("groups");
+        write_skill(
+            &groups_dir,
+            "dev",
+            "research",
+            "Always include concise source notes when relevant.",
+        );
+
+        let runner = CapturePromptRunner::default();
+        let prompts = runner.prompts.clone();
+        let orchestrator = Orchestrator::create(
+            db,
+            OrchestratorConfig {
+                groups_dir,
+                ..OrchestratorConfig::default()
+            },
+            Arc::new(runner),
+            Arc::new(MockOutbound::default()),
+        )
+        .await
+        .expect("create orchestrator");
+
+        let success = orchestrator
+            .process_group_messages("group@g.us".to_string())
+            .await;
+        assert!(success);
+
+        let captured = prompts.lock().expect("captured prompts lock");
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("<skills>"));
+        assert!(captured[0].contains("Always include concise source notes when relevant."));
     }
 
     #[tokio::test]

@@ -281,6 +281,9 @@ async fn run_daemon() -> Result<(), String> {
     let outbound_sender_mode =
         read_env("OUTBOUND_SENDER_MODE").unwrap_or_else(|| "discord".to_string());
     let data_dir = data_dir_from_env();
+    let groups_dir = groups_dir_from_env();
+    let skill_max_bytes = read_usize("SKILL_MAX_BYTES", 12_000);
+    let skill_max_count = read_usize("SKILL_MAX_COUNT", 8);
     let _runtime_lock = acquire_runtime_lock(&data_dir)?;
     let ipc_base_dir = data_dir.join("ipc");
 
@@ -309,6 +312,9 @@ async fn run_daemon() -> Result<(), String> {
         OrchestratorConfig {
             assistant_name: assistant_name.clone(),
             main_group_folder: main_group_folder.clone(),
+            groups_dir,
+            skill_max_bytes,
+            skill_max_count,
             poll_interval,
             idle_timeout,
             ipc_base_dir: Some(ipc_base_dir.clone()),
@@ -801,6 +807,17 @@ fn data_dir_from_env() -> std::path::PathBuf {
                 .unwrap_or_else(|_| ".".into())
                 .join("data")
         })
+}
+
+fn groups_dir_from_env() -> std::path::PathBuf {
+    if let Some(groups_dir) = read_env("GROUPS_DIR") {
+        return std::path::PathBuf::from(groups_dir);
+    }
+
+    let project_root = read_env("PROJECT_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    project_root.join("groups")
 }
 
 fn acquire_runtime_lock(data_dir: &Path) -> Result<File, String> {

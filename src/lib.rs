@@ -14,6 +14,7 @@ pub mod mount_security;
 pub mod orchestrator;
 pub mod outbound_command;
 pub mod router;
+pub mod skill_loader;
 pub mod state_migration;
 pub mod task_scheduler;
 pub mod types;

@@ -35,6 +35,14 @@ pub fn escape_xml(value: &str) -> String {
 }
 
 pub fn format_messages(messages: &[NewMessage], assistant_name: &str) -> String {
+    format_messages_with_skills(messages, assistant_name, None)
+}
+
+pub fn format_messages_with_skills(
+    messages: &[NewMessage],
+    assistant_name: &str,
+    skill_instructions: Option<&str>,
+) -> String {
     let lines = messages
         .iter()
         .map(|message| {
@@ -47,9 +55,15 @@ pub fn format_messages(messages: &[NewMessage], assistant_name: &str) -> String 
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let skills_section = skill_instructions
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map(|content| format!("Active skill instructions:\n<skills>\n{content}\n</skills>\n\n"))
+        .unwrap_or_default();
 
     format!(
         "You are {assistant_name}, the assistant for this group.\n\
+{skills_section}\
 Reply to the latest message in <messages> with one natural message.\n\
 Rules:\n\
 - Output only the final reply message.\n\
@@ -188,6 +202,29 @@ mod tests {
         assert!(rendered.contains(
             "<messages>\n<message sender=\"Alice &lt;QA&gt;\" time=\"2026-02-19T00:00:00.000Z\">hello &amp; bye</message>\n</messages>"
         ));
+    }
+
+    #[test]
+    fn format_messages_with_skills_includes_skill_section() {
+        let messages = vec![NewMessage {
+            id: "1".to_string(),
+            chat_jid: "group@g.us".to_string(),
+            sender: "user".to_string(),
+            sender_name: "Alice".to_string(),
+            content: "hello".to_string(),
+            timestamp: "2026-02-19T00:00:00.000Z".to_string(),
+            is_from_me: false,
+            is_bot_message: false,
+        }];
+
+        let rendered = format_messages_with_skills(
+            &messages,
+            "Andy",
+            Some("### Skill: research\nAlways provide sources."),
+        );
+        assert!(rendered.contains("Active skill instructions:"));
+        assert!(rendered.contains("<skills>"));
+        assert!(rendered.contains("Always provide sources."));
     }
 
     #[test]
