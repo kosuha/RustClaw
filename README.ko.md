@@ -38,7 +38,7 @@ cargo build
 cp .env.example .env
 ```
 
-2. `.env`에 필수 값을 입력합니다.
+2. `.env`에 값을 입력합니다.
 
 ```env
 DISCORD_BOT_TOKEN=your_discord_bot_token
@@ -46,18 +46,14 @@ AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord
 ```
 
 `AUTO_REGISTER_MAIN_JID` 형식:
+
 - `<discord_channel_id>@discord`
 - 예시: `123456789012345678@discord`
 
 Discord 채널 ID 확인 방법:
+
 - Discord `설정 -> 고급`에서 `개발자 모드`를 켭니다.
 - 대상 채널을 우클릭하고 `채널 ID 복사`를 선택합니다.
-
-`AUTO_REGISTER_MAIN_JID`를 넣지 않으면, 시작 전에 1회 수동 등록이 필요합니다:
-
-```bash
-cargo run -- bootstrap-main --jid <channel_id>@discord
-```
 
 3. 호스트에서 Codex 로그인을 합니다.
 
