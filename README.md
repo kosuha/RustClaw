@@ -129,6 +129,54 @@ cargo build --release
 ./target/release/rust_claw run
 ```
 
+## Run As a Daemon (systemd, Linux server)
+
+Use this for production servers so rust-claw keeps running after SSH disconnect/reboot.
+
+1. Build release binary first.
+
+```bash
+cargo build --release
+```
+
+2. Create a systemd service file.
+
+```bash
+sudo tee /etc/systemd/system/rust-claw.service >/dev/null <<'EOF'
+[Unit]
+Description=RustClaw daemon
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=<your_linux_user>
+WorkingDirectory=/absolute/path/to/rust-claw
+EnvironmentFile=/absolute/path/to/rust-claw/.env
+ExecStart=/absolute/path/to/rust-claw/target/release/rust_claw run
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+3. Enable and start the service.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-claw
+```
+
+4. Check service status and logs.
+
+```bash
+sudo systemctl status rust-claw --no-pager
+journalctl -u rust-claw -f
+```
+
 ## Agent Usage (Discord)
 
 1. Make sure a main channel is registered.

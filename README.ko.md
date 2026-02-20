@@ -126,6 +126,54 @@ cargo build --release
 ./target/release/rust_claw run
 ```
 
+## 데몬으로 실행 (systemd, Linux 서버)
+
+운영 서버에서는 SSH가 끊기거나 재부팅되어도 계속 동작하도록 이 방식을 권장합니다.
+
+1. 먼저 릴리즈 바이너리를 빌드합니다.
+
+```bash
+cargo build --release
+```
+
+2. systemd 서비스 파일을 만듭니다.
+
+```bash
+sudo tee /etc/systemd/system/rust-claw.service >/dev/null <<'EOF'
+[Unit]
+Description=RustClaw daemon
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=<your_linux_user>
+WorkingDirectory=/absolute/path/to/rust-claw
+EnvironmentFile=/absolute/path/to/rust-claw/.env
+ExecStart=/absolute/path/to/rust-claw/target/release/rust_claw run
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+3. 서비스 자동 시작/즉시 실행:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-claw
+```
+
+4. 상태와 로그 확인:
+
+```bash
+sudo systemctl status rust-claw --no-pager
+journalctl -u rust-claw -f
+```
+
 ## 에이전트 사용법 (Discord)
 
 1. 먼저 메인 채널이 등록되어 있어야 합니다.
