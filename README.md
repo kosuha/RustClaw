@@ -38,38 +38,40 @@ cargo build
 cp .env.example .env
 ```
 
-Required:
+2. Set required values in `.env`.
 
-- `DISCORD_BOT_TOKEN`
-- `AUTO_REGISTER_MAIN_JID` (first run in Discord mode)
-: Format is `<discord_channel_id>@discord` (example: `123456789012345678@discord`).
-: Get channel ID in Discord: `Settings -> Advanced -> Developer Mode ON`, then right-click the channel and click `Copy Channel ID`.
+```env
+DISCORD_BOT_TOKEN=your_discord_bot_token
+AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord
+```
 
-Optional (recommended):
+`AUTO_REGISTER_MAIN_JID` format:
+- `<discord_channel_id>@discord`
+- example: `123456789012345678@discord`
 
-- `CODEX_AUTH_DIR` (default: `~/.codex`)
+How to copy Discord channel ID:
+- Open Discord Settings -> Advanced -> turn on Developer Mode.
+- Right-click your target channel -> Copy Channel ID.
 
-By default, no API keys are passed into agent containers.
-
-If you do not set `AUTO_REGISTER_MAIN_JID`, register a main group manually before use:
+If `AUTO_REGISTER_MAIN_JID` is not set, register once manually:
 
 ```bash
 cargo run -- bootstrap-main --jid <channel_id>@discord
 ```
 
-2. Login Codex on host.
+3. Login Codex on host.
 
 ```bash
 codex login
 ```
 
-3. Build the agent runner container image.
+4. Build the agent runner container image.
 
 ```bash
 docker build -t rust-claw-codex-agent:latest ./container/codex-agent-runner
 ```
 
-4. Start rust-claw.
+5. Start rust-claw.
 
 ```bash
 cargo run -- run
@@ -87,6 +89,7 @@ cargo build --release
 - Default runtime mode is `AGENT_RUNNER_MODE=container`.
 - The main Rust process runs on host, and it spawns per-task agent containers via Docker.
 - Data/state are written under `data/`, `groups/`, and `store/`.
+- By default, no API keys are passed into agent containers.
 
 ## License
 

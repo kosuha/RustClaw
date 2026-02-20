@@ -38,38 +38,40 @@ cargo build
 cp .env.example .env
 ```
 
-필수:
+2. `.env`에 필수 값을 입력합니다.
 
-- `DISCORD_BOT_TOKEN`
-- `AUTO_REGISTER_MAIN_JID` (Discord 모드 첫 실행)
-: 형식은 `<discord_channel_id>@discord` 입니다 (예: `123456789012345678@discord`).
-: Discord 채널 ID 확인: `설정 -> 고급 -> 개발자 모드 ON` 후, 채널 우클릭 -> `채널 ID 복사`.
+```env
+DISCORD_BOT_TOKEN=your_discord_bot_token
+AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord
+```
 
-선택(권장):
+`AUTO_REGISTER_MAIN_JID` 형식:
+- `<discord_channel_id>@discord`
+- 예시: `123456789012345678@discord`
 
-- `CODEX_AUTH_DIR` (기본값: `~/.codex`)
+Discord 채널 ID 확인 방법:
+- Discord `설정 -> 고급`에서 `개발자 모드`를 켭니다.
+- 대상 채널을 우클릭하고 `채널 ID 복사`를 선택합니다.
 
-기본값으로는 API 키를 에이전트 컨테이너에 전달하지 않습니다.
-
-`AUTO_REGISTER_MAIN_JID`를 설정하지 않으면, 사용 전에 메인 그룹을 수동 등록해야 합니다:
+`AUTO_REGISTER_MAIN_JID`를 넣지 않으면, 시작 전에 1회 수동 등록이 필요합니다:
 
 ```bash
 cargo run -- bootstrap-main --jid <channel_id>@discord
 ```
 
-2. 호스트에서 Codex 로그인을 합니다.
+3. 호스트에서 Codex 로그인을 합니다.
 
 ```bash
 codex login
 ```
 
-3. 에이전트 실행용 컨테이너 이미지를 빌드합니다.
+4. 에이전트 실행용 컨테이너 이미지를 빌드합니다.
 
 ```bash
 docker build -t rust-claw-codex-agent:latest ./container/codex-agent-runner
 ```
 
-4. rust-claw를 실행합니다.
+5. rust-claw를 실행합니다.
 
 ```bash
 cargo run -- run
@@ -87,6 +89,7 @@ cargo build --release
 - 기본 런타임 모드는 `AGENT_RUNNER_MODE=container` 입니다.
 - 메인 Rust 프로세스는 호스트에서 실행되고, 작업별 에이전트 컨테이너를 Docker로 생성합니다.
 - 데이터/상태는 `data/`, `groups/`, `store/` 아래에 저장됩니다.
+- 기본값으로는 API 키를 에이전트 컨테이너에 전달하지 않습니다.
 
 ## License
 
