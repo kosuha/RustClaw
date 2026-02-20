@@ -21,6 +21,7 @@ use crate::types::AdditionalMount;
 
 const RUNTIME_OPTIONAL_ENV_KEYS: &[&str] = &[
     "CODEX_MODEL",
+    "CODEX_REASONING_EFFORT",
     "CODEX_APPROVAL_POLICY",
     "CODEX_SANDBOX_MODE",
     "CODEX_ENABLE_SEARCH",

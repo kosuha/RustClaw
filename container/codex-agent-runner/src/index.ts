@@ -257,6 +257,25 @@ function normalizeSandbox(raw: string): string {
   }
 }
 
+function normalizeReasoningEffort(raw: string | undefined): string {
+  const value = raw?.trim().toLowerCase();
+  if (!value) {
+    return 'medium';
+  }
+  switch (value) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+      return value;
+    default:
+      log(`invalid CODEX_REASONING_EFFORT='${raw}', fallback to 'medium'`);
+      return 'medium';
+  }
+}
+
 function toSandboxPolicyType(sandbox: string): string {
   switch (sandbox.trim().toLowerCase()) {
     case 'danger-full-access':
@@ -557,6 +576,7 @@ async function runTurn(
   };
   const enableSearchRaw = process.env.CODEX_ENABLE_SEARCH?.trim().toLowerCase();
   const enableSearch = enableSearchRaw ? !['0', 'false', 'no', 'off'].includes(enableSearchRaw) : true;
+  const reasoningEffort = normalizeReasoningEffort(process.env.CODEX_REASONING_EFFORT);
 
   let turnId = '';
   let closedDuringTurn = false;
@@ -610,6 +630,7 @@ async function runTurn(
     approvalPolicy,
     sandboxPolicy,
     search: enableSearch,
+    effort: reasoningEffort,
   });
   const extractedTurnId = extractTurnId(started);
   if (!extractedTurnId) {
