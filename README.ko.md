@@ -158,7 +158,17 @@ sudo systemctl status rust-claw --no-pager
 journalctl -u rust-claw -f
 ```
 
-4. 수동 방식이 필요하면:
+4. 서비스 종료/재시작/자동시작 해제:
+
+```bash
+sudo systemctl stop rust-claw
+sudo systemctl restart rust-claw
+sudo systemctl disable rust-claw
+```
+
+터미널에서 `cargo run -- run`으로 직접 실행했다면 `Ctrl+C`로 종료합니다.
+
+5. 수동 방식이 필요하면:
    - 템플릿 파일: `docs/systemd/rust-claw.service`
    - 설치 위치: `/etc/systemd/system/rust-claw.service`
 

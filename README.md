@@ -161,7 +161,17 @@ sudo systemctl status rust-claw --no-pager
 journalctl -u rust-claw -f
 ```
 
-4. Optional manual method:
+4. Stop, restart, or disable the service.
+
+```bash
+sudo systemctl stop rust-claw
+sudo systemctl restart rust-claw
+sudo systemctl disable rust-claw
+```
+
+If you started with `cargo run -- run` in a terminal, press `Ctrl+C` to stop.
+
+5. Optional manual method:
    - Template file: `docs/systemd/rust-claw.service`
    - Install path: `/etc/systemd/system/rust-claw.service`
 
