@@ -56,10 +56,17 @@ docker --version
 
 3. Codex CLI 설치
    - `npm` 명령이 없으면 먼저 Node.js LTS 설치: <https://nodejs.org/en/download>
+   - SSH/서버 환경에서는 device auth 로그인을 사용하세요.
 
 ```bash
 npm install -g @openai/codex
 codex --version
+codex login --device-auth
+```
+
+같은 PC에서 브라우저를 함께 쓰는 로컬 환경이면 아래도 가능합니다:
+
+```bash
 codex login
 ```
 
@@ -94,10 +101,10 @@ Discord 채널 ID 확인 방법:
 - Discord `설정 -> 고급`에서 `개발자 모드`를 켭니다.
 - 대상 채널을 우클릭하고 `채널 ID 복사`를 선택합니다.
 
-3. 호스트에서 Codex 로그인을 합니다.
+3. 호스트에서 Codex 로그인을 합니다 (SSH/서버 권장).
 
 ```bash
-codex login
+codex login --device-auth
 ```
 
 4. 에이전트 실행용 컨테이너 이미지를 빌드합니다.

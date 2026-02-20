@@ -55,10 +55,17 @@ docker --version
 
 3. Install Codex CLI.
    - Install Node.js LTS first if `npm` is not available: <https://nodejs.org/en/download>
+   - For SSH/server environments, use device auth login.
 
 ```bash
 npm install -g @openai/codex
 codex --version
+codex login --device-auth
+```
+
+If you are on a local machine with a browser on the same host, you can also use:
+
+```bash
 codex login
 ```
 
@@ -97,10 +104,10 @@ If `AUTO_REGISTER_MAIN_JID` is not set, register once manually:
 cargo run -- bootstrap-main --jid <channel_id>@discord
 ```
 
-3. Login Codex on host.
+3. Login Codex on host (recommended for SSH/server).
 
 ```bash
-codex login
+codex login --device-auth
 ```
 
 4. Build the agent runner container image.
