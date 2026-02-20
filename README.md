@@ -14,6 +14,16 @@ I liked NanoClaw's architecture and wanted to use this style of AI assistant. Ho
 - Agent runtime: uses `codex app-server` path inside a container
 - Core implementation: reimplemented the orchestrator in Rust
 
+## What RustClaw Can Do
+
+- Receive messages from Discord channels and send AI replies.
+- Keep one **main channel** that works without `@AssistantName` trigger.
+- Register additional Discord channels as groups.
+- Run scheduled prompts with `cron`, `interval` (milliseconds), or `once`.
+- Manage tasks from CLI: list, pause, resume, cancel.
+- Handle advanced IPC actions: schedule tasks, register groups, enable/disable skills.
+- IPC permission rule: main group can manage all groups; non-main groups can manage only themselves.
+
 ## Installation
 
 Requirements:
@@ -82,6 +92,62 @@ Or run release binary:
 ```bash
 cargo build --release
 ./target/release/rust_claw run
+```
+
+## Agent Usage (Discord)
+
+1. Make sure a main channel is registered.
+   - Recommended: set `AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord` in `.env`.
+   - Or register once manually:
+
+```bash
+cargo run -- bootstrap-main --jid <discord_channel_id>@discord
+```
+
+2. Start the app:
+
+```bash
+cargo run -- run
+```
+
+3. Send messages:
+   - Main channel (`folder=main`): normal messages are enough.
+   - Non-main channel (default): message must start with `@<ASSISTANT_NAME>`.
+
+4. Trigger examples (when `ASSISTANT_NAME=Andy`):
+   - Works: `@Andy summarize this thread`
+   - Ignored: `please @Andy summarize this thread`
+
+5. If you want a non-main channel to work without a trigger, register it with `--requires-trigger false`.
+
+## CLI Admin Usage
+
+```bash
+# Show groups
+cargo run -- list-groups
+
+# Register another Discord channel as a group
+cargo run -- register-group \
+  --jid <discord_channel_id>@discord \
+  --name "Team Ops" \
+  --folder team-ops \
+  --trigger @Andy \
+  --requires-trigger true
+
+# Create a scheduled task (every day at 09:00)
+cargo run -- create-task \
+  --id daily-report \
+  --group-folder main \
+  --chat-jid <discord_channel_id>@discord \
+  --prompt "Write today's daily report." \
+  --schedule-type cron \
+  --schedule-value "0 9 * * *"
+
+# List/control tasks
+cargo run -- list-tasks
+cargo run -- pause-task --id daily-report
+cargo run -- resume-task --id daily-report
+cargo run -- cancel-task --id daily-report
 ```
 
 ## Notes

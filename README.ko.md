@@ -14,6 +14,17 @@
 - 에이전트 런타임: 컨테이너 안에서 `codex app-server` 경로 사용
 - 코어 구현: 오케스트레이터를 Rust로 재구현
 
+## RustClaw로 할 수 있는 것
+
+- Discord 채널 메시지를 받아 AI 답변을 보냅니다.
+- **메인 채널 1개**는 `@이름` 없이도 바로 동작합니다.
+- 추가 Discord 채널을 그룹으로 등록해 분리 운영할 수 있습니다.
+- 스케줄 작업을 `cron`, `interval`(밀리초), `once`로 실행할 수 있습니다.
+- CLI로 작업을 조회/일시정지/재개/취소할 수 있습니다.
+- 고급 IPC 기능으로 그룹 등록, 작업 생성, 스킬 on/off를 처리할 수 있습니다.
+- IPC 권한 규칙:
+  메인 그룹은 전체 그룹을 관리할 수 있고, 일반 그룹은 자기 그룹만 관리할 수 있습니다.
+
 ## 설치
 
 필요한 것:
@@ -78,6 +89,62 @@ cargo run -- run
 ```bash
 cargo build --release
 ./target/release/rust_claw run
+```
+
+## 에이전트 사용법 (Discord)
+
+1. 먼저 메인 채널이 등록되어 있어야 합니다.
+   - 권장: `.env`에 `AUTO_REGISTER_MAIN_JID=<discord_channel_id>@discord` 설정
+   - 또는 1회 수동 등록:
+
+```bash
+cargo run -- bootstrap-main --jid <discord_channel_id>@discord
+```
+
+2. 앱 실행:
+
+```bash
+cargo run -- run
+```
+
+3. 메시지 보내기:
+   - 메인 채널(`folder=main`): 일반 메시지로 바로 동작
+   - 일반 채널(기본값): 메시지 맨 앞에 `@<ASSISTANT_NAME>`가 있어야 동작
+
+4. 트리거 예시 (`ASSISTANT_NAME=Andy`일 때):
+   - 동작함: `@Andy 이 대화 요약해줘`
+   - 무시됨: `이거 @Andy 요약해줘`
+
+5. 일반 채널도 트리거 없이 쓰고 싶다면 `--requires-trigger false`로 등록하세요.
+
+## CLI 관리자 사용법
+
+```bash
+# 그룹 목록 확인
+cargo run -- list-groups
+
+# 다른 Discord 채널을 그룹으로 등록
+cargo run -- register-group \
+  --jid <discord_channel_id>@discord \
+  --name "Team Ops" \
+  --folder team-ops \
+  --trigger @Andy \
+  --requires-trigger true
+
+# 스케줄 작업 생성 (매일 09:00)
+cargo run -- create-task \
+  --id daily-report \
+  --group-folder main \
+  --chat-jid <discord_channel_id>@discord \
+  --prompt "오늘 일일 보고서 작성해줘." \
+  --schedule-type cron \
+  --schedule-value "0 9 * * *"
+
+# 작업 목록/제어
+cargo run -- list-tasks
+cargo run -- pause-task --id daily-report
+cargo run -- resume-task --id daily-report
+cargo run -- cancel-task --id daily-report
 ```
 
 ## 참고
