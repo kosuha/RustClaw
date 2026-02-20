@@ -139,38 +139,30 @@ Use this for production servers so rust-claw keeps running after SSH disconnect/
 cargo build --release
 ```
 
-2. Create a systemd service file.
+2. Copy prepared service template.
 
 ```bash
-sudo tee /etc/systemd/system/rust-claw.service >/dev/null <<'EOF'
-[Unit]
-Description=RustClaw daemon
-After=network-online.target docker.service
-Wants=network-online.target docker.service
-
-[Service]
-Type=simple
-User=<your_linux_user>
-WorkingDirectory=/absolute/path/to/rust-claw
-EnvironmentFile=/absolute/path/to/rust-claw/.env
-ExecStart=/absolute/path/to/rust-claw/target/release/rust_claw run
-Restart=always
-RestartSec=5
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sudo cp docs/systemd/rust-claw.service /etc/systemd/system/rust-claw.service
 ```
 
-3. Enable and start the service.
+3. Edit required fields in `/etc/systemd/system/rust-claw.service`.
+   - `User=YOUR_LINUX_USER`
+   - `WorkingDirectory=/ABSOLUTE/PATH/TO/rust-claw`
+   - `EnvironmentFile=/ABSOLUTE/PATH/TO/rust-claw/.env`
+   - `ExecStart=/ABSOLUTE/PATH/TO/rust-claw/target/release/rust_claw run`
+
+```bash
+sudo nano /etc/systemd/system/rust-claw.service
+```
+
+4. Enable and start the service.
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now rust-claw
 ```
 
-4. Check service status and logs.
+5. Check service status and logs.
 
 ```bash
 sudo systemctl status rust-claw --no-pager

@@ -136,38 +136,30 @@ cargo build --release
 cargo build --release
 ```
 
-2. systemd 서비스 파일을 만듭니다.
+2. 미리 준비된 서비스 템플릿을 복사합니다.
 
 ```bash
-sudo tee /etc/systemd/system/rust-claw.service >/dev/null <<'EOF'
-[Unit]
-Description=RustClaw daemon
-After=network-online.target docker.service
-Wants=network-online.target docker.service
-
-[Service]
-Type=simple
-User=<your_linux_user>
-WorkingDirectory=/absolute/path/to/rust-claw
-EnvironmentFile=/absolute/path/to/rust-claw/.env
-ExecStart=/absolute/path/to/rust-claw/target/release/rust_claw run
-Restart=always
-RestartSec=5
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sudo cp docs/systemd/rust-claw.service /etc/systemd/system/rust-claw.service
 ```
 
-3. 서비스 자동 시작/즉시 실행:
+3. `/etc/systemd/system/rust-claw.service`에서 아래 값을 수정합니다.
+   - `User=YOUR_LINUX_USER`
+   - `WorkingDirectory=/ABSOLUTE/PATH/TO/rust-claw`
+   - `EnvironmentFile=/ABSOLUTE/PATH/TO/rust-claw/.env`
+   - `ExecStart=/ABSOLUTE/PATH/TO/rust-claw/target/release/rust_claw run`
+
+```bash
+sudo nano /etc/systemd/system/rust-claw.service
+```
+
+4. 서비스 자동 시작/즉시 실행:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now rust-claw
 ```
 
-4. 상태와 로그 확인:
+5. 상태와 로그 확인:
 
 ```bash
 sudo systemctl status rust-claw --no-pager

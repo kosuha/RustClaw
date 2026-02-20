@@ -1,0 +1,22 @@
+[Unit]
+Description=RustClaw daemon
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+
+# Change this to your Linux account that runs rust-claw.
+User=YOUR_LINUX_USER
+
+# Change these paths to your rust-claw directory.
+WorkingDirectory=/ABSOLUTE/PATH/TO/rust-claw
+EnvironmentFile=/ABSOLUTE/PATH/TO/rust-claw/.env
+ExecStart=/ABSOLUTE/PATH/TO/rust-claw/target/release/rust_claw run
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
