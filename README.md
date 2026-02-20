@@ -41,11 +41,18 @@ cp .env.example .env
 Required:
 
 - `DISCORD_BOT_TOKEN`
+- `AUTO_REGISTER_MAIN_JID` (recommended for first run in Discord mode)
 
 Optional (recommended):
 
 - `OPENAI_API_KEY`
 - `CODEX_AUTH_DIR` (default: `~/.codex`)
+
+If you do not set `AUTO_REGISTER_MAIN_JID`, register a main group manually before use:
+
+```bash
+cargo run -- bootstrap-main --jid <channel_id>@discord
+```
 
 2. Login Codex on host.
 

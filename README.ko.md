@@ -41,11 +41,18 @@ cp .env.example .env
 필수:
 
 - `DISCORD_BOT_TOKEN`
+- `AUTO_REGISTER_MAIN_JID` (Discord 모드 첫 실행 권장)
 
 선택(권장):
 
 - `OPENAI_API_KEY`
 - `CODEX_AUTH_DIR` (기본값: `~/.codex`)
+
+`AUTO_REGISTER_MAIN_JID`를 설정하지 않으면, 사용 전에 메인 그룹을 수동 등록해야 합니다:
+
+```bash
+cargo run -- bootstrap-main --jid <channel_id>@discord
+```
 
 2. 호스트에서 Codex 로그인을 합니다.
 
