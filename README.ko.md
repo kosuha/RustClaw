@@ -22,7 +22,61 @@
 - Docker
 - Codex CLI
 - Plan을 구독 중인 OpenAI 계정
-- Discord Bot Token, Channel ID
+- Discord Bot Token
+
+의존성 설치:
+
+```bash
+cargo build
+```
+
+## 실행 (권장: 호스트 프로세스 + Docker 런타임)
+
+1. 환경변수를 준비합니다.
+
+```bash
+cp .env.example .env
+```
+
+필수:
+
+- `DISCORD_BOT_TOKEN`
+
+선택(권장):
+
+- `OPENAI_API_KEY`
+- `CODEX_AUTH_DIR` (기본값: `~/.codex`)
+
+2. 호스트에서 Codex 로그인을 합니다.
+
+```bash
+codex login
+```
+
+3. 에이전트 실행용 컨테이너 이미지를 빌드합니다.
+
+```bash
+docker build -t rust-claw-codex-agent:latest ./container/codex-agent-runner
+```
+
+4. rust-claw를 실행합니다.
+
+```bash
+cargo run -- run
+```
+
+또는 릴리즈 바이너리로 실행:
+
+```bash
+cargo build --release
+./target/release/rust_claw run
+```
+
+## 참고
+
+- 기본 런타임 모드는 `AGENT_RUNNER_MODE=container` 입니다.
+- 메인 Rust 프로세스는 호스트에서 실행되고, 작업별 에이전트 컨테이너를 Docker로 생성합니다.
+- 데이터/상태는 `data/`, `groups/`, `store/` 아래에 저장됩니다.
 
 ## License
 

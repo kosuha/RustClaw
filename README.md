@@ -21,8 +21,62 @@ Requirements:
 - Rust
 - Docker
 - Codex CLI
-- An OpenAI account with an active plan
-- Discord Bot Token and Channel ID
+- OpenAI account (active plan)
+- Discord Bot Token
+
+Install dependencies:
+
+```bash
+cargo build
+```
+
+## Run (Recommended: host process + Docker runtime)
+
+1. Prepare environment variables.
+
+```bash
+cp .env.example .env
+```
+
+Required:
+
+- `DISCORD_BOT_TOKEN`
+
+Optional (recommended):
+
+- `OPENAI_API_KEY`
+- `CODEX_AUTH_DIR` (default: `~/.codex`)
+
+2. Login Codex on host.
+
+```bash
+codex login
+```
+
+3. Build the agent runner container image.
+
+```bash
+docker build -t rust-claw-codex-agent:latest ./container/codex-agent-runner
+```
+
+4. Start rust-claw.
+
+```bash
+cargo run -- run
+```
+
+Or run release binary:
+
+```bash
+cargo build --release
+./target/release/rust_claw run
+```
+
+## Notes
+
+- Default runtime mode is `AGENT_RUNNER_MODE=container`.
+- The main Rust process runs on host, and it spawns per-task agent containers via Docker.
+- Data/state are written under `data/`, `groups/`, and `store/`.
 
 ## License
 
