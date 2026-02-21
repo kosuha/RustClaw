@@ -188,7 +188,7 @@ struct PreparedRequest {
     path: String,
     query_pairs: Vec<(String, String)>,
     body_pairs: Vec<(String, String)>,
-    body_json: Option<Value>,
+    body_json: Option<String>,
     max_retries: u32,
     idempotency_key: Option<String>,
 }
@@ -789,7 +789,7 @@ fn prepare_request(request: &UpbitHttpRequest) -> Result<PreparedRequest, String
                 body_pairs.push(("identifier".to_string(), value));
             }
 
-            let body_json = pairs_to_object(&body_pairs);
+            let body_json = pairs_to_json_object(&body_pairs)?;
 
             Ok(PreparedRequest {
                 endpoint,
@@ -849,7 +849,7 @@ async fn execute_upbit_request(request: &PreparedRequest) -> Result<Value, Strin
         if request.method == UpbitHttpMethod::Post {
             builder = builder.header(CONTENT_TYPE, UPBIT_POST_CONTENT_TYPE);
             if let Some(body_json) = &request.body_json {
-                builder = builder.json(body_json);
+                builder = builder.body(body_json.clone());
             }
         }
 
@@ -1372,12 +1372,22 @@ fn is_positive_number(raw: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn pairs_to_object(pairs: &[(String, String)]) -> Value {
-    let mut object = Map::new();
-    for (key, value) in pairs {
-        object.insert(key.clone(), Value::String(value.clone()));
+fn pairs_to_json_object(pairs: &[(String, String)]) -> Result<String, String> {
+    let mut body = String::from("{");
+    for (idx, (key, value)) in pairs.iter().enumerate() {
+        if idx > 0 {
+            body.push(',');
+        }
+        let encoded_key = serde_json::to_string(key)
+            .map_err(|err| format!("failed to serialize order field key: {err}"))?;
+        let encoded_value = serde_json::to_string(value)
+            .map_err(|err| format!("failed to serialize order field value: {err}"))?;
+        body.push_str(encoded_key.as_str());
+        body.push(':');
+        body.push_str(encoded_value.as_str());
     }
-    Value::Object(object)
+    body.push('}');
+    Ok(body)
 }
 
 fn rate_state() -> &'static Mutex<RateLimitState> {
@@ -1723,5 +1733,21 @@ mod tests {
         let bad = json!({"market": "KRW-BTC", "count": 201});
         let bad_map = bad.as_object().expect("bad map");
         assert!(build_candle_query_pairs(bad_map, 200).is_err());
+    }
+
+    #[test]
+    fn pairs_to_json_object_keeps_pair_order() {
+        let pairs = vec![
+            ("market".to_string(), "KRW-BTC".to_string()),
+            ("side".to_string(), "bid".to_string()),
+            ("ord_type".to_string(), "price".to_string()),
+            ("price".to_string(), "10000".to_string()),
+            ("identifier".to_string(), "ord-123".to_string()),
+        ];
+        let json_body = pairs_to_json_object(&pairs).expect("json body");
+        assert_eq!(
+            json_body,
+            "{\"market\":\"KRW-BTC\",\"side\":\"bid\",\"ord_type\":\"price\",\"price\":\"10000\",\"identifier\":\"ord-123\"}"
+        );
     }
 }
