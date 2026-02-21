@@ -9,13 +9,16 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
-import { createHash, createHmac, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const SKILLS_FILE = path.join(IPC_DIR, 'current_skills.json');
+const UPBIT_RESPONSES_DIR = path.join(IPC_DIR, 'responses');
+const UPBIT_PROXY_TIMEOUT_MS = 45000;
+const UPBIT_PROXY_POLL_MS = 120;
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -40,19 +43,6 @@ type UpbitQueryValue = UpbitQueryPrimitive | UpbitQueryPrimitive[] | undefined |
 type UpbitQuery = Record<string, UpbitQueryValue>;
 type UpbitRequestMethod = 'GET' | 'POST' | 'DELETE';
 
-type UpbitCredentials = {
-  accessKey: string;
-  secretKey: string;
-  baseUrl: string;
-};
-
-type UpbitErrorResponse = {
-  error?: {
-    name?: string;
-    message?: string;
-  };
-};
-
 type UpbitRequestOptions = {
   pathname: string;
   method?: UpbitRequestMethod;
@@ -61,17 +51,18 @@ type UpbitRequestOptions = {
   requiresAuth: boolean;
   rateLimitGroupHint?: string;
   maxRetries?: number;
+  intent?: UpbitProxyIntent;
 };
 
-type UpbitRemainingReq = {
-  group: string;
-  sec: number | null;
+type UpbitProxyIntent = {
+  confirmRealOrder?: boolean;
 };
 
-type UpbitRateLimitBucket = {
-  secRemaining: number | null;
-  updatedAtMs: number;
-  blockedUntilMs: number;
+type UpbitProxyResponse = {
+  requestId?: string;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
 };
 
 type UpbitTickerRow = {
@@ -139,14 +130,7 @@ type UpbitCreateOrderPayload = {
   identifier?: string;
 };
 
-const UPBIT_DEFAULT_BASE_URL = 'https://api.upbit.com';
-const UPBIT_POST_CONTENT_TYPE = 'application/json; charset=utf-8';
 const UPBIT_DEFAULT_MAX_RETRIES = 3;
-const UPBIT_DEFAULT_BACKOFF_MS = 250;
-const UPBIT_MAX_BACKOFF_MS = 4000;
-const UPBIT_BLOCK_FALLBACK_MS = 60_000;
-const upbitRateLimitBuckets = new Map<string, UpbitRateLimitBucket>();
-let upbitGlobalBlockedUntilMs = 0;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -223,25 +207,6 @@ function listableSkills(
   });
 }
 
-function normalizeUpbitBaseUrl(raw: string | undefined): string {
-  const baseUrl = (raw || UPBIT_DEFAULT_BASE_URL).trim();
-  return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-}
-
-function resolveUpbitCredentials(): UpbitCredentials | null {
-  const accessKey = process.env.UPBIT_ACCESS_KEY?.trim();
-  const secretKey = process.env.UPBIT_SECRET_KEY?.trim();
-  if (!accessKey || !secretKey) {
-    return null;
-  }
-
-  return {
-    accessKey,
-    secretKey,
-    baseUrl: normalizeUpbitBaseUrl(process.env.UPBIT_BASE_URL),
-  };
-}
-
 function toErrorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
@@ -283,20 +248,6 @@ function buildUpbitQueryString(params: UpbitQuery = {}, encode = false): string 
     .join('&');
 }
 
-function buildUpbitAuthQueryString(
-  method: UpbitRequestMethod,
-  rawQueryString: string,
-  rawBodyQueryString: string,
-): string {
-  if (method === 'GET' || method === 'DELETE') {
-    return rawQueryString;
-  }
-  if (rawQueryString && rawBodyQueryString) {
-    return `${rawQueryString}&${rawBodyQueryString}`;
-  }
-  return rawBodyQueryString || rawQueryString;
-}
-
 function sanitizeUpbitPayload(payload?: UpbitQuery): UpbitQuery | undefined {
   if (!payload) {
     return undefined;
@@ -313,307 +264,75 @@ function sanitizeUpbitPayload(payload?: UpbitQuery): UpbitQuery | undefined {
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
-function inferUpbitRateLimitGroup(pathname: string, method: UpbitRequestMethod): string {
-  if (pathname.startsWith('/v1/market')) {
-    return 'market';
-  }
-  if (pathname.startsWith('/v1/ticker')) {
-    return 'ticker';
-  }
-  if (pathname.startsWith('/v1/orderbook')) {
-    return 'orderbook';
-  }
-  if (pathname.startsWith('/v1/candles')) {
-    return 'candle';
-  }
-  if (pathname === '/v1/orders' && method === 'POST') {
-    return 'order';
-  }
-  if (pathname === '/v1/orders/test' && method === 'POST') {
-    return 'order-test';
-  }
-  return 'default';
-}
-
-function parseUpbitRemainingReq(rawHeader: string | null): UpbitRemainingReq | null {
-  if (!rawHeader) {
-    return null;
-  }
-
-  const out: UpbitRemainingReq = {
-    group: 'default',
-    sec: null,
-  };
-
-  for (const part of rawHeader.split(';')) {
-    const [rawKey, rawValue] = part.split('=');
-    const key = rawKey?.trim().toLowerCase();
-    const value = rawValue?.trim();
-    if (!key || !value) {
-      continue;
-    }
-    if (key === 'group') {
-      out.group = value;
-      continue;
-    }
-    if (key === 'sec') {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) {
-        out.sec = parsed;
-      }
-    }
-  }
-
-  return out;
-}
-
-function updateUpbitRateLimitBucket(response: Response): string {
-  const parsed = parseUpbitRemainingReq(response.headers.get('Remaining-Req'));
-  if (!parsed) {
-    return 'default';
-  }
-
-  const current = upbitRateLimitBuckets.get(parsed.group) || {
-    secRemaining: null,
-    updatedAtMs: 0,
-    blockedUntilMs: 0,
-  };
-  current.secRemaining = parsed.sec;
-  current.updatedAtMs = Date.now();
-  upbitRateLimitBuckets.set(parsed.group, current);
-  return parsed.group;
-}
-
-function parseRetryAfterMs(response: Response): number | null {
-  const header = response.headers.get('Retry-After');
-  if (!header) {
-    return null;
-  }
-
-  const asSeconds = Number(header);
-  if (Number.isFinite(asSeconds)) {
-    return Math.max(Math.ceil(asSeconds * 1000), 0);
-  }
-
-  const asDateMs = Date.parse(header);
-  if (!Number.isFinite(asDateMs)) {
-    return null;
-  }
-
-  return Math.max(asDateMs - Date.now(), 0);
-}
-
-function parseUpbitBlockWindowMs(detail: string): number | null {
-  const trimmed = detail.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const millisecondMatch = trimmed.match(/(\d+)\s*ms/i);
-  if (millisecondMatch?.[1]) {
-    return Number(millisecondMatch[1]);
-  }
-
-  const secondMatch = trimmed.match(/(\d+)\s*(?:sec|secs|second|seconds|초)/i);
-  if (secondMatch?.[1]) {
-    return Number(secondMatch[1]) * 1000;
-  }
-
-  const minuteMatch = trimmed.match(/(\d+)\s*(?:min|mins|minute|minutes|분)/i);
-  if (minuteMatch?.[1]) {
-    return Number(minuteMatch[1]) * 60_000;
-  }
-
-  return null;
-}
-
-function rememberUpbitTemporaryBlock(group: string, waitMs: number): void {
-  const safeWaitMs = Math.max(waitMs, 1000);
-  const blockedUntilMs = Date.now() + safeWaitMs;
-  upbitGlobalBlockedUntilMs = Math.max(upbitGlobalBlockedUntilMs, blockedUntilMs);
-
-  const bucket = upbitRateLimitBuckets.get(group) || {
-    secRemaining: null,
-    updatedAtMs: 0,
-    blockedUntilMs: 0,
-  };
-  bucket.blockedUntilMs = Math.max(bucket.blockedUntilMs, blockedUntilMs);
-  upbitRateLimitBuckets.set(group, bucket);
-}
-
-async function throttleUpbitIfNeeded(groupHint: string): Promise<void> {
-  let waitMs = 0;
-  const now = Date.now();
-
-  if (upbitGlobalBlockedUntilMs > now) {
-    waitMs = Math.max(waitMs, upbitGlobalBlockedUntilMs - now);
-  }
-
-  const bucket = upbitRateLimitBuckets.get(groupHint);
-  if (bucket) {
-    if (bucket.blockedUntilMs > now) {
-      waitMs = Math.max(waitMs, bucket.blockedUntilMs - now);
-    }
-    if (bucket.secRemaining !== null && bucket.secRemaining <= 0) {
-      const elapsed = now - bucket.updatedAtMs;
-      if (elapsed < 1000) {
-        waitMs = Math.max(waitMs, 1050 - elapsed);
-      }
-    }
-  }
-
-  if (waitMs > 0) {
-    await sleep(waitMs);
-  }
-}
-
-function withJitter(baseMs: number): number {
-  return Math.max(baseMs + Math.floor(Math.random() * 150), 0);
-}
-
-function upbitErrorDetail(parsed: unknown): string {
-  if (typeof parsed === 'string') {
-    return parsed;
-  }
-
-  const payload = parsed as UpbitErrorResponse | null;
-  if (payload?.error?.name && payload.error.message) {
-    return `${payload.error.name}: ${payload.error.message}`;
-  }
-  if (payload?.error?.message) {
-    return payload.error.message;
-  }
-
-  return JSON.stringify(parsed ?? {});
-}
-
-async function parseUpbitResponse(response: Response): Promise<{ parsed: unknown; detail: string }> {
-  const bodyText = await response.text();
-  let parsed: unknown = null;
-  if (bodyText.trim()) {
-    try {
-      parsed = JSON.parse(bodyText) as unknown;
-    } catch {
-      parsed = bodyText;
-    }
-  }
-
-  return {
-    parsed,
-    detail: upbitErrorDetail(parsed),
-  };
-}
-
-function buildUpbitRequestUrl(baseUrl: string, pathname: string, encodedQueryString: string): string {
-  const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
-  return `${baseUrl}${normalizedPath}${encodedQueryString ? `?${encodedQueryString}` : ''}`;
-}
-
 async function requestUpbit(options: UpbitRequestOptions): Promise<unknown> {
   const method = options.method || 'GET';
   const sanitizedQuery = sanitizeUpbitPayload(options.query);
   const sanitizedBody = sanitizeUpbitPayload(options.body);
-  const encodedQueryString = buildUpbitQueryString(sanitizedQuery, true);
-  const rawQueryString = buildUpbitQueryString(sanitizedQuery, false);
-  const rawBodyQueryString = buildUpbitQueryString(sanitizedBody, false);
-  const queryHashSource = buildUpbitAuthQueryString(method, rawQueryString, rawBodyQueryString);
+  const requestId = `upbit_${randomUUID().replaceAll('-', '')}`;
 
-  const rateLimitGroupHint =
-    options.rateLimitGroupHint || inferUpbitRateLimitGroup(options.pathname, method);
-  const maxRetries = options.maxRetries ?? UPBIT_DEFAULT_MAX_RETRIES;
-  let backoffMs = UPBIT_DEFAULT_BACKOFF_MS;
+  writeIpcFile(TASKS_DIR, {
+    type: 'upbit_proxy_request',
+    requestId,
+    action: 'http_request',
+    request: {
+      pathname: options.pathname,
+      method,
+      query: sanitizedQuery,
+      body: sanitizedBody,
+      requiresAuth: options.requiresAuth,
+      rateLimitGroupHint: options.rateLimitGroupHint,
+      maxRetries: options.maxRetries ?? UPBIT_DEFAULT_MAX_RETRIES,
+      intent: options.intent,
+    },
+    groupFolder,
+    timestamp: new Date().toISOString(),
+  });
 
-  let baseUrl = normalizeUpbitBaseUrl(process.env.UPBIT_BASE_URL);
-  let credentials: UpbitCredentials | null = null;
-  if (options.requiresAuth) {
-    credentials = resolveUpbitCredentials();
-    if (!credentials) {
-      throw new Error(
-        'Missing credentials. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in environment variables.',
-      );
-    }
-
-    baseUrl = credentials.baseUrl;
+  const response = await waitForUpbitProxyResponse(requestId);
+  if (response.ok !== true) {
+    throw new Error(response.error || 'Host Upbit broker returned an unknown error.');
   }
 
-  const requestUrl = buildUpbitRequestUrl(baseUrl, options.pathname, encodedQueryString);
-
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    await throttleUpbitIfNeeded(rateLimitGroupHint);
-    const token = credentials ? createUpbitJwt(credentials, queryHashSource) : undefined;
-
-    let response: Response;
-    try {
-      response = await fetch(requestUrl, {
-        method,
-        headers: {
-          Accept: 'application/json',
-          ...(method === 'POST' ? { 'Content-Type': UPBIT_POST_CONTENT_TYPE } : {}),
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: method === 'POST' ? JSON.stringify(sanitizedBody || {}) : undefined,
-      });
-    } catch (error) {
-      if (attempt >= maxRetries) {
-        throw new Error(`Upbit API network error: ${toErrorMessage(error)}`);
-      }
-      await sleep(withJitter(backoffMs));
-      backoffMs = Math.min(backoffMs * 2, UPBIT_MAX_BACKOFF_MS);
-      continue;
-    }
-
-    const observedGroup = updateUpbitRateLimitBucket(response) || rateLimitGroupHint;
-    const parsed = await parseUpbitResponse(response);
-
-    if (response.status === 429) {
-      if (attempt >= maxRetries) {
-        throw new Error(`Upbit API rate limit exceeded (429): ${parsed.detail}`);
-      }
-      const retryAfterMs = parseRetryAfterMs(response);
-      const sleepMs = retryAfterMs ?? withJitter(backoffMs);
-      await sleep(Math.max(sleepMs, 150));
-      backoffMs = Math.min(backoffMs * 2, UPBIT_MAX_BACKOFF_MS);
-      continue;
-    }
-
-    if (response.status === 418) {
-      const retryAfterMs =
-        parseRetryAfterMs(response) ??
-        parseUpbitBlockWindowMs(parsed.detail) ??
-        UPBIT_BLOCK_FALLBACK_MS;
-      rememberUpbitTemporaryBlock(observedGroup, retryAfterMs);
-      const seconds = Math.ceil(retryAfterMs / 1000);
-      throw new Error(`Upbit API blocked requests temporarily (418). Retry after ~${seconds}s.`);
-    }
-
-    if (!response.ok) {
-      throw new Error(`Upbit API request failed (${response.status}): ${parsed.detail}`);
-    }
-
-    return parsed.parsed;
-  }
-
-  throw new Error('Upbit API request failed after retries.');
+  return response.result ?? null;
 }
 
-function createUpbitJwt(credentials: UpbitCredentials, queryHashSource: string): string {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS512', typ: 'JWT' })).toString('base64url');
-  const payloadData: Record<string, string> = {
-    access_key: credentials.accessKey,
-    nonce: randomUUID(),
-  };
-
-  if (queryHashSource) {
-    payloadData.query_hash = createHash('sha512').update(queryHashSource, 'utf8').digest('hex');
-    payloadData.query_hash_alg = 'SHA512';
+function readUpbitProxyResponse(requestId: string): UpbitProxyResponse | null {
+  const responseFile = path.join(UPBIT_RESPONSES_DIR, `${requestId}.json`);
+  if (!fs.existsSync(responseFile)) {
+    return null;
   }
 
-  const payload = Buffer.from(JSON.stringify(payloadData)).toString('base64url');
-  const signingInput = `${header}.${payload}`;
-  const signature = createHmac('sha512', credentials.secretKey)
-    .update(signingInput, 'utf8')
-    .digest('base64url');
-  return `${signingInput}.${signature}`;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(responseFile, 'utf8')) as UpbitProxyResponse;
+    try {
+      fs.unlinkSync(responseFile);
+    } catch {
+      // no-op
+    }
+    return parsed;
+  } catch (error) {
+    try {
+      fs.unlinkSync(responseFile);
+    } catch {
+      // no-op
+    }
+    throw new Error(`Failed to parse host Upbit broker response: ${toErrorMessage(error)}`);
+  }
+}
+
+async function waitForUpbitProxyResponse(
+  requestId: string,
+  maxWaitMs = UPBIT_PROXY_TIMEOUT_MS,
+): Promise<UpbitProxyResponse> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= maxWaitMs) {
+    const response = readUpbitProxyResponse(requestId);
+    if (response) {
+      return response;
+    }
+    await sleep(UPBIT_PROXY_POLL_MS);
+  }
+  throw new Error(`Timed out waiting for Upbit host broker response (requestId=${requestId}).`);
 }
 
 async function requestUpbitPublic(pathname: string, query?: UpbitQuery): Promise<unknown> {
@@ -992,7 +711,7 @@ server.tool(
 
 server.tool(
   'upbit_get_balances',
-  'Fetch authenticated account balances from Upbit exchange API. Requires UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY environment variables.',
+  'Fetch authenticated account balances from Upbit exchange API. Requires host-side UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY.',
   {
     hide_zero_balances: z
       .boolean()
@@ -1181,6 +900,18 @@ server.tool(
         isError: true,
       };
     }
+    if (!args.dry_run && !payload.identifier) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              'Real order requires a stable identifier for idempotency. Re-run with identifier=<unique_key>.',
+          },
+        ],
+        isError: true,
+      };
+    }
 
     const endpoint = args.dry_run ? '/v1/orders/test' : '/v1/orders';
     const modeLabel = args.dry_run ? 'test-order' : 'real-order';
@@ -1193,6 +924,9 @@ server.tool(
         body,
         rateLimitGroupHint: rateGroup,
         maxRetries: args.dry_run ? UPBIT_DEFAULT_MAX_RETRIES : 0,
+        intent: {
+          confirmRealOrder: args.confirm_real_order,
+        },
       });
 
       return {

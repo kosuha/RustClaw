@@ -18,3 +18,4 @@ pub mod skill_loader;
 pub mod state_migration;
 pub mod task_scheduler;
 pub mod types;
+pub mod upbit_broker;

@@ -28,7 +28,8 @@ const RUNTIME_OPTIONAL_ENV_KEYS: &[&str] = &[
     "CODEX_ENABLE_SEARCH",
 ];
 
-const DEFAULT_CREDENTIAL_ENV_KEYS: &[&str] =
+const DEFAULT_CREDENTIAL_ENV_KEYS: &[&str] = &[];
+const BLOCKED_CREDENTIAL_ENV_KEYS: &[&str] =
     &["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "UPBIT_BASE_URL"];
 
 #[derive(Clone, Debug)]
@@ -142,6 +143,8 @@ impl ContainerAgentRunner {
             .map_err(|err| format!("failed to create IPC tasks dir: {err}"))?;
         fs::create_dir_all(ipc_dir.join("input"))
             .map_err(|err| format!("failed to create IPC input dir: {err}"))?;
+        fs::create_dir_all(ipc_dir.join("responses"))
+            .map_err(|err| format!("failed to create IPC responses dir: {err}"))?;
         mounts.push(VolumeMount {
             host_path: ipc_dir.to_string_lossy().to_string(),
             container_path: "/workspace/ipc".to_string(),
@@ -639,11 +642,20 @@ fn merge_allowed_credential_keys(extra: Vec<String>) -> Vec<String> {
         .map(|key| (*key).to_string())
         .collect::<Vec<_>>();
     for key in extra {
+        if is_blocked_credential_key(&key) {
+            continue;
+        }
         if !keys.iter().any(|existing| existing == &key) {
             keys.push(key);
         }
     }
     keys
+}
+
+fn is_blocked_credential_key(key: &str) -> bool {
+    BLOCKED_CREDENTIAL_ENV_KEYS
+        .iter()
+        .any(|blocked| blocked.eq_ignore_ascii_case(key))
 }
 
 #[derive(Default)]
@@ -818,31 +830,25 @@ mod tests {
     #[test]
     fn merge_allowed_credential_keys_includes_defaults() {
         let keys = merge_allowed_credential_keys(Vec::new());
-        assert_eq!(
-            keys,
-            vec![
-                "UPBIT_ACCESS_KEY".to_string(),
-                "UPBIT_SECRET_KEY".to_string(),
-                "UPBIT_BASE_URL".to_string()
-            ]
-        );
+        assert!(keys.is_empty());
     }
 
     #[test]
     fn merge_allowed_credential_keys_appends_unique_extras() {
+        let keys =
+            merge_allowed_credential_keys(vec!["MY_API_KEY".to_string(), "MY_API_KEY".to_string()]);
+        assert_eq!(keys, vec!["MY_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn merge_allowed_credential_keys_blocks_upbit_keys() {
         let keys = merge_allowed_credential_keys(vec![
+            "UPBIT_ACCESS_KEY".to_string(),
             "UPBIT_SECRET_KEY".to_string(),
-            "MY_API_KEY".to_string(),
+            "UPBIT_BASE_URL".to_string(),
+            "OTHER_KEY".to_string(),
         ]);
-        assert_eq!(
-            keys,
-            vec![
-                "UPBIT_ACCESS_KEY".to_string(),
-                "UPBIT_SECRET_KEY".to_string(),
-                "UPBIT_BASE_URL".to_string(),
-                "MY_API_KEY".to_string()
-            ]
-        );
+        assert_eq!(keys, vec!["OTHER_KEY".to_string()]);
     }
 
     #[test]

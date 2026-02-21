@@ -16,6 +16,12 @@ serde_json = "1.0.145"
 serenity = { version = "0.12.4", default-features = false, features = ["client", "gateway", "model", "rustls_backend", "http"] }
 tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 fs2 = "0.4.3"
+base64 = "0.22.1"
+hmac = "0.12.1"
+reqwest = { version = "0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10.9"
+urlencoding = "2.1.3"
+uuid = { version = "1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"

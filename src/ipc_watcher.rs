@@ -18,6 +18,7 @@ use crate::db::Db;
 use crate::env_file::read_env_var;
 use crate::orchestrator::Orchestrator;
 use crate::types::{ContextMode, RegisteredGroup, ScheduleType, ScheduledTask, TaskStatus};
+use crate::upbit_broker::{is_upbit_proxy_request, process_upbit_proxy_request};
 
 const ERROR_DIR_NAME: &str = "errors";
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
@@ -131,7 +132,15 @@ async fn process_group_ipc_dir(
                 process_message_payload(orchestrator, db, source_group, is_main, &payload).await
             }
             "tasks" => {
-                process_task_payload(orchestrator, db, source_group, is_main, &payload).await
+                process_task_payload(
+                    ipc_base_dir,
+                    orchestrator,
+                    db,
+                    source_group,
+                    is_main,
+                    &payload,
+                )
+                .await
             }
             _ => Ok(()),
         };
@@ -319,12 +328,18 @@ async fn process_message_payload(
 }
 
 async fn process_task_payload(
+    ipc_base_dir: &Path,
     orchestrator: &Orchestrator,
     db: &Db,
     source_group: &str,
     is_main: bool,
     payload: &Value,
 ) -> Result<(), String> {
+    if is_upbit_proxy_request(payload) {
+        process_upbit_proxy_request(ipc_base_dir, source_group, payload).await?;
+        return Ok(());
+    }
+
     let Some(payload_type) = string_field(payload, &["type"]) else {
         return Ok(());
     };
@@ -931,6 +946,7 @@ mod tests {
         .expect("process authorized message");
 
         process_task_payload(
+            tmp.path(),
             &orchestrator,
             &db,
             "other",
@@ -941,6 +957,7 @@ mod tests {
         .expect("pause task");
 
         process_task_payload(
+            tmp.path(),
             &orchestrator,
             &db,
             "other",
@@ -957,6 +974,7 @@ mod tests {
         .expect("schedule task");
 
         process_task_payload(
+            tmp.path(),
             &orchestrator,
             &db,
             "other",
@@ -971,6 +989,7 @@ mod tests {
         .expect("disable cross-group skill");
 
         process_task_payload(
+            tmp.path(),
             &orchestrator,
             &db,
             "other",
@@ -1018,6 +1037,7 @@ mod tests {
             create_orchestrator(&db, Some(ipc_base.clone()), Arc::new(StdoutOutboundSender)).await;
 
         process_task_payload(
+            &ipc_base,
             &orchestrator,
             &db,
             "other",
@@ -1039,6 +1059,7 @@ mod tests {
         );
 
         process_task_payload(
+            &ipc_base,
             &orchestrator,
             &db,
             "main",
@@ -1061,6 +1082,7 @@ mod tests {
         );
 
         process_task_payload(
+            &ipc_base,
             &orchestrator,
             &db,
             "main",
