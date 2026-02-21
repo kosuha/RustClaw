@@ -177,6 +177,7 @@ type UpbitOrderChancePayload = {
 };
 
 const UPBIT_DEFAULT_MAX_RETRIES = 3;
+const UPBIT_TICKER_BATCH_SIZE = 20;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -498,6 +499,172 @@ function formatUpbitTradeLine(row: UpbitTradeTickRow): string {
   const side = row.ask_bid || 'unknown';
   const seq = row.sequential_id ? `, seq=${String(row.sequential_id)}` : '';
   return `- ${market} @ ${time}: price=${price}, volume=${volume}, side=${side}${seq}`;
+}
+
+function formatNullableFixed(value: number | null, digits = 8): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  return value.toFixed(digits);
+}
+
+function chunkArray<T>(rows: T[], size: number): T[][] {
+  if (size <= 0) {
+    return [rows];
+  }
+  const chunks: T[][] = [];
+  for (let idx = 0; idx < rows.length; idx += size) {
+    chunks.push(rows.slice(idx, idx + size));
+  }
+  return chunks;
+}
+
+async function fetchUpbitMarketSet(): Promise<Set<string>> {
+  const payload = await requestUpbitPublic('/v1/market/all', { is_details: false });
+  if (!Array.isArray(payload)) {
+    throw new Error(`Unexpected markets response: ${formatUpbitJson(payload)}`);
+  }
+  const rows = payload as UpbitMarketRow[];
+  return new Set(
+    rows
+      .map((row) => (row.market || '').trim().toUpperCase())
+      .filter((market) => market.length > 0),
+  );
+}
+
+async function fetchUpbitTickerPriceMap(markets: string[]): Promise<Map<string, number>> {
+  const uniqueMarkets = normalizeMarkets(markets);
+  const result = new Map<string, number>();
+  if (uniqueMarkets.length === 0) {
+    return result;
+  }
+
+  const chunks = chunkArray(uniqueMarkets, UPBIT_TICKER_BATCH_SIZE);
+  for (const chunk of chunks) {
+    const payload = await requestUpbitPublic('/v1/ticker', { markets: chunk.join(',') });
+    if (!Array.isArray(payload)) {
+      throw new Error(`Unexpected ticker response: ${formatUpbitJson(payload)}`);
+    }
+    const rows = payload as UpbitTickerRow[];
+    for (const row of rows) {
+      const market = (row.market || '').trim().toUpperCase();
+      const price = asNumber(row.trade_price);
+      if (market && typeof price === 'number' && Number.isFinite(price) && price > 0) {
+        result.set(market, price);
+      }
+    }
+  }
+  return result;
+}
+
+function buildValuationMarketList(currencies: string[], marketSet: Set<string>): string[] {
+  const required = new Set<string>();
+
+  const anchors = ['KRW-USDT', 'KRW-BTC', 'USDT-BTC'];
+  for (const anchor of anchors) {
+    if (marketSet.has(anchor)) {
+      required.add(anchor);
+    }
+  }
+
+  for (const currencyRaw of currencies) {
+    const currency = currencyRaw.trim().toUpperCase();
+    if (!currency) {
+      continue;
+    }
+    const candidates = [`KRW-${currency}`, `USDT-${currency}`, `BTC-${currency}`];
+    for (const market of candidates) {
+      if (marketSet.has(market)) {
+        required.add(market);
+      }
+    }
+  }
+
+  return Array.from(required);
+}
+
+function resolveKrwPrice(
+  currencyRaw: string,
+  tickerByMarket: Map<string, number>,
+): number | null {
+  const currency = currencyRaw.trim().toUpperCase();
+  const krwPerUsdt = tickerByMarket.get('KRW-USDT') || null;
+  const krwPerBtc = tickerByMarket.get('KRW-BTC') || null;
+
+  if (currency === 'KRW') {
+    return 1;
+  }
+  if (currency === 'USDT') {
+    return krwPerUsdt;
+  }
+  if (currency === 'BTC') {
+    return krwPerBtc;
+  }
+
+  const directKrw = tickerByMarket.get(`KRW-${currency}`) || null;
+  if (directKrw) {
+    return directKrw;
+  }
+
+  const usdtQuote = tickerByMarket.get(`USDT-${currency}`) || null;
+  if (usdtQuote && krwPerUsdt) {
+    return usdtQuote * krwPerUsdt;
+  }
+
+  const btcQuote = tickerByMarket.get(`BTC-${currency}`) || null;
+  if (btcQuote && krwPerBtc) {
+    return btcQuote * krwPerBtc;
+  }
+
+  return null;
+}
+
+function resolveUsdtPrice(
+  currencyRaw: string,
+  tickerByMarket: Map<string, number>,
+): number | null {
+  const currency = currencyRaw.trim().toUpperCase();
+  const krwPerUsdt = tickerByMarket.get('KRW-USDT') || null;
+  const usdtPerBtc = tickerByMarket.get('USDT-BTC') || null;
+  const krwPerBtc = tickerByMarket.get('KRW-BTC') || null;
+
+  if (currency === 'USDT') {
+    return 1;
+  }
+  if (currency === 'KRW') {
+    return krwPerUsdt && krwPerUsdt > 0 ? 1 / krwPerUsdt : null;
+  }
+  if (currency === 'BTC') {
+    if (usdtPerBtc) {
+      return usdtPerBtc;
+    }
+    if (krwPerBtc && krwPerUsdt && krwPerUsdt > 0) {
+      return krwPerBtc / krwPerUsdt;
+    }
+    return null;
+  }
+
+  const directUsdt = tickerByMarket.get(`USDT-${currency}`) || null;
+  if (directUsdt) {
+    return directUsdt;
+  }
+
+  const directKrw = tickerByMarket.get(`KRW-${currency}`) || null;
+  if (directKrw && krwPerUsdt && krwPerUsdt > 0) {
+    return directKrw / krwPerUsdt;
+  }
+
+  const directBtc = tickerByMarket.get(`BTC-${currency}`) || null;
+  if (directBtc) {
+    if (usdtPerBtc) {
+      return directBtc * usdtPerBtc;
+    }
+    if (krwPerBtc && krwPerUsdt && krwPerUsdt > 0) {
+      return (directBtc * krwPerBtc) / krwPerUsdt;
+    }
+  }
+
+  return null;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -1068,17 +1235,77 @@ server.tool(
         return { content: [{ type: 'text' as const, text: 'No balances matched the filter.' }] };
       }
 
+      const currencies = Array.from(
+        new Set(
+          filtered
+            .map((row) => (row.currency || '').trim().toUpperCase())
+            .filter((currency) => currency.length > 0),
+        ),
+      );
+
+      const marketSet = await fetchUpbitMarketSet();
+      const valuationMarkets = buildValuationMarketList(currencies, marketSet);
+      const tickerByMarket = await fetchUpbitTickerPriceMap(valuationMarkets);
+
+      let totalKrw = 0;
+      let totalUsdt = 0;
+      let pricedRowsKrw = 0;
+      let pricedRowsUsdt = 0;
+      const unpricedInKrw: string[] = [];
+      const unpricedInUsdt: string[] = [];
+
       const lines = filtered
         .map((row) => {
-          const currency = row.currency || 'UNKNOWN';
+          const currency = (row.currency || 'UNKNOWN').trim().toUpperCase();
           const unit = row.unit_currency || '';
+          const free = asNumber(row.balance) || 0;
+          const locked = asNumber(row.locked) || 0;
+          const totalAmount = free + locked;
           const avgBuyPrice = formatFixed(row.avg_buy_price, 8);
-          return `- ${currency}: balance=${formatFixed(row.balance, 8)}, locked=${formatFixed(row.locked, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}`;
+
+          const krwPerUnit = resolveKrwPrice(currency, tickerByMarket);
+          const usdtPerUnit = resolveUsdtPrice(currency, tickerByMarket);
+          const krwValue =
+            typeof krwPerUnit === 'number' && Number.isFinite(krwPerUnit)
+              ? totalAmount * krwPerUnit
+              : null;
+          const usdtValue =
+            typeof usdtPerUnit === 'number' && Number.isFinite(usdtPerUnit)
+              ? totalAmount * usdtPerUnit
+              : null;
+
+          if (krwValue !== null) {
+            totalKrw += krwValue;
+            pricedRowsKrw += 1;
+          } else if (!unpricedInKrw.includes(currency)) {
+            unpricedInKrw.push(currency);
+          }
+
+          if (usdtValue !== null) {
+            totalUsdt += usdtValue;
+            pricedRowsUsdt += 1;
+          } else if (!unpricedInUsdt.includes(currency)) {
+            unpricedInUsdt.push(currency);
+          }
+
+          return `- ${currency}: free=${formatNullableFixed(free, 8)}, locked=${formatNullableFixed(locked, 8)}, total=${formatNullableFixed(totalAmount, 8)}, krw_value=${formatNullableFixed(krwValue, 2)}, usdt_value=${formatNullableFixed(usdtValue, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}`;
         })
         .join('\n');
 
+      const headerLines = [
+        `- total_asset_krw=${formatNullableFixed(totalKrw, 2)}`,
+        `- total_asset_usdt=${formatNullableFixed(totalUsdt, 8)}`,
+        `- priced_assets=${pricedRowsKrw}/${filtered.length} (KRW), ${pricedRowsUsdt}/${filtered.length} (USDT)`,
+      ];
+      if (unpricedInKrw.length > 0) {
+        headerLines.push(`- unpriced_in_krw=${unpricedInKrw.join(', ')}`);
+      }
+      if (unpricedInUsdt.length > 0) {
+        headerLines.push(`- unpriced_in_usdt=${unpricedInUsdt.join(', ')}`);
+      }
+
       return {
-        content: [{ type: 'text' as const, text: `Upbit balances:\n${lines}` }],
+        content: [{ type: 'text' as const, text: `Upbit balances summary:\n${headerLines.join('\n')}\n\nUpbit balances by ticker:\n${lines}` }],
       };
     } catch (error) {
       return upbitToolError('Failed to fetch Upbit balances', error);
