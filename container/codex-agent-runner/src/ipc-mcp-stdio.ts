@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
+import { fileURLToPath } from 'url';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -784,10 +785,82 @@ function upbitToolError(prefix: string, error: unknown): { content: Array<{ type
   };
 }
 
+function discoverRegisteredToolNames(): string[] {
+  const fallback = [
+    'send_message',
+    'upbit_get_markets',
+    'upbit_get_ticker',
+    'upbit_get_orderbook',
+    'upbit_get_recent_trades',
+    'upbit_get_candles_minutes',
+    'upbit_get_candles_days',
+    'upbit_get_candles_weeks',
+    'upbit_get_candles_months',
+    'upbit_get_candles_years',
+    'upbit_get_balances',
+    'upbit_get_open_orders',
+    'upbit_get_order_chance',
+    'upbit_get_order',
+    'upbit_get_closed_orders',
+    'upbit_cancel_order',
+    'upbit_create_order',
+    'schedule_task',
+    'list_tasks',
+    'pause_task',
+    'resume_task',
+    'cancel_task',
+    'register_group',
+    'refresh_groups',
+    'list_skills',
+    'enable_skill',
+    'disable_skill',
+    'list_available_tools',
+  ];
+
+  try {
+    const currentFilePath = fileURLToPath(import.meta.url);
+    const raw = fs.readFileSync(currentFilePath, 'utf8');
+    const regex = /server\.tool\(\s*'([^']+)'/g;
+    const names: string[] = [];
+
+    while (true) {
+      const matched = regex.exec(raw);
+      if (!matched) {
+        break;
+      }
+      const name = matched[1]?.trim();
+      if (name && !names.includes(name)) {
+        names.push(name);
+      }
+    }
+
+    if (names.length > 0) {
+      return names.sort();
+    }
+  } catch {
+    // no-op; fallback list will be returned.
+  }
+
+  return fallback;
+}
+
 const server = new McpServer({
   name: 'nanoclaw',
   version: '1.0.0',
 });
+
+server.tool(
+  'list_available_tools',
+  'List tool names currently available to this agent runtime. Use this when the user asks what tools can be used.',
+  {},
+  async () => {
+    const names = discoverRegisteredToolNames();
+    const lines = names.map((name) => `- ${name}`).join('\n');
+    return {
+      content: [{ type: 'text' as const, text: `Available tools (${names.length}):\n${lines}` }],
+    };
+  },
+);
 
 server.tool(
   'send_message',
