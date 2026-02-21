@@ -5,8 +5,7 @@ reference/
 /target
 /store
 /data
-/logs
-/groups/
+logs/
 
 .env
 container/codex-agent-runner/node_modules/

@@ -1,0 +1,8 @@
+interface:
+  display_name: "BTC Regime Allocator"
+  short_description: "주간 레짐 기반 BTC 현물 배분/리밸런싱"
+  default_prompt: "Use $btc-regime-allocator to produce this week’s regime score (0–100) and a Monday 10:00 KST spot BTC allocation plan using global indices, BTC trend/volatility, and RSS headlines."
+
+policy:
+  allow_implicit_invocation: true
+
