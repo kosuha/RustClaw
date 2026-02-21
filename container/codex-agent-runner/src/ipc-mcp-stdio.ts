@@ -101,7 +101,7 @@ type UpbitOrderbookRow = {
   orderbook_units?: UpbitOrderbookUnit[];
 };
 
-type UpbitOpenOrderRow = {
+type UpbitOrderRow = {
   uuid?: string;
   identifier?: string;
   market?: string;
@@ -111,6 +111,8 @@ type UpbitOpenOrderRow = {
   price?: string;
   volume?: string;
   remaining_volume?: string;
+  executed_volume?: string;
+  executed_funds?: string;
   created_at?: string;
 };
 
@@ -128,6 +130,26 @@ type UpbitCreateOrderPayload = {
   time_in_force?: UpbitTimeInForce;
   smp_type?: UpbitSmpType;
   identifier?: string;
+};
+
+type UpbitOrderChancePayload = {
+  bid_fee?: string;
+  ask_fee?: string;
+  market?: {
+    id?: string;
+    state?: string;
+    bid_types?: string[];
+    ask_types?: string[];
+    bid?: {
+      min_total?: string;
+      currency?: string;
+    };
+    ask?: {
+      min_total?: string;
+      currency?: string;
+    };
+    max_total?: string;
+  };
 };
 
 const UPBIT_DEFAULT_MAX_RETRIES = 3;
@@ -401,6 +423,35 @@ function normalizeMarkets(markets: string[]): string[] {
 function normalizeOptionalString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function buildOrderSelectorQuery(uuid?: string, identifier?: string): { query?: UpbitQuery; error?: string } {
+  const normalizedUuid = normalizeOptionalString(uuid);
+  const normalizedIdentifier = normalizeOptionalString(identifier);
+
+  if (normalizedUuid && normalizedIdentifier) {
+    return { error: 'Provide only one of uuid or identifier.' };
+  }
+  if (!normalizedUuid && !normalizedIdentifier) {
+    return { error: 'Either uuid or identifier is required.' };
+  }
+
+  if (normalizedUuid) {
+    return { query: { uuid: normalizedUuid } };
+  }
+  return { query: { identifier: normalizedIdentifier! } };
+}
+
+function formatUpbitOrderLine(row: UpbitOrderRow): string {
+  const id = row.identifier || row.uuid || 'UNKNOWN_ID';
+  const market = row.market || 'UNKNOWN';
+  const side = row.side || 'unknown';
+  const orderType = row.ord_type || 'unknown';
+  const state = row.state || 'unknown';
+  const remain = row.remaining_volume || row.volume || '-';
+  const executed = row.executed_volume || '-';
+  const price = row.price || '-';
+  return `- ${id}: ${market} ${side}/${orderType}, state=${state}, remaining=${remain}, executed=${executed}, price=${price}`;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -768,25 +819,44 @@ server.tool(
   'Fetch authenticated open orders from Upbit exchange API.',
   {
     market: z.string().optional().describe('Optional market code filter (e.g. KRW-BTC).'),
+    state: z
+      .enum(['wait', 'watch'])
+      .optional()
+      .describe('Optional single state filter. Cannot be used with states.'),
     states: z
       .array(z.enum(['wait', 'watch']))
       .min(1)
       .max(2)
-      .default(['wait', 'watch'])
-      .describe('Order states to filter.'),
-    limit: z.number().int().min(1).max(100).default(20).describe('Maximum rows to print.'),
+      .optional()
+      .describe('Optional multi-state filter. Cannot be used with state.'),
+    page: z.number().int().min(1).default(1).describe('Pagination page number.'),
+    limit: z.number().int().min(1).max(100).default(100).describe('Maximum rows to print.'),
     order_by: z.enum(['asc', 'desc']).default('desc').describe('Sort direction by creation time.'),
   },
   async (args) => {
+    if (args.state && args.states && args.states.length > 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'Use either state or states, not both.' }],
+        isError: true,
+      };
+    }
+
     const query: UpbitQuery = {
+      page: args.page,
       order_by: args.order_by,
       limit: args.limit,
-      'states[]': args.states,
     };
 
     const market = normalizeOptionalString(args.market);
     if (market) {
       query.market = market.toUpperCase();
+    }
+    if (args.states && args.states.length > 0) {
+      query['states[]'] = args.states;
+    } else if (args.state) {
+      query.state = args.state;
+    } else {
+      query['states[]'] = ['wait', 'watch'];
     }
 
     try {
@@ -802,23 +872,14 @@ server.tool(
         };
       }
 
-      const rows = payload as UpbitOpenOrderRow[];
+      const rows = payload as UpbitOrderRow[];
       if (rows.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No open orders found.' }] };
       }
 
       const lines = rows
         .slice(0, args.limit)
-        .map((row) => {
-          const id = row.identifier || row.uuid || 'UNKNOWN_ID';
-          const marketValue = row.market || 'UNKNOWN';
-          const side = row.side || 'unknown';
-          const orderType = row.ord_type || 'unknown';
-          const state = row.state || 'unknown';
-          const remain = row.remaining_volume || row.volume || '-';
-          const price = row.price || '-';
-          return `- ${id}: ${marketValue} ${side}/${orderType}, state=${state}, remaining=${remain}, price=${price}`;
-        })
+        .map((row) => formatUpbitOrderLine(row))
         .join('\n');
       const suffix = rows.length > args.limit ? `\n... (${rows.length - args.limit} more)` : '';
 
@@ -827,6 +888,242 @@ server.tool(
       };
     } catch (error) {
       return upbitToolError('Failed to fetch Upbit open orders', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_order_chance',
+  'Fetch authenticated order availability/policy information for a market from Upbit exchange API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+  },
+  async (args) => {
+    const market = args.market.trim().toUpperCase();
+    if (!market) {
+      return {
+        content: [{ type: 'text' as const, text: 'market is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPrivate('/v1/orders/chance', {
+        method: 'GET',
+        query: { market },
+        rateLimitGroupHint: 'default',
+      });
+      const row = (Array.isArray(payload) ? payload[0] : payload) as UpbitOrderChancePayload | undefined;
+      if (!row || typeof row !== 'object') {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected order chance response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      const marketId = row.market?.id || market;
+      const marketState = row.market?.state || 'unknown';
+      const bidTypes = Array.isArray(row.market?.bid_types) ? row.market?.bid_types.join(', ') : '-';
+      const askTypes = Array.isArray(row.market?.ask_types) ? row.market?.ask_types.join(', ') : '-';
+      const bidMin = row.market?.bid?.min_total || '-';
+      const askMin = row.market?.ask?.min_total || '-';
+      const maxTotal = row.market?.max_total || '-';
+      const lines = [
+        `- market=${marketId}, state=${marketState}`,
+        `- bid_types=${bidTypes}`,
+        `- ask_types=${askTypes}`,
+        `- min_total(bid)=${bidMin}, min_total(ask)=${askMin}, max_total=${maxTotal}`,
+        `- fee(bid)=${row.bid_fee || '-'}, fee(ask)=${row.ask_fee || '-'}`,
+      ].join('\n');
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit order chance:\n${lines}\n\nraw:\n${formatUpbitJson(payload)}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit order chance', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_order',
+  'Fetch one authenticated order by uuid or identifier from Upbit exchange API.',
+  {
+    uuid: z.string().optional().describe('Upbit order UUID.'),
+    identifier: z.string().optional().describe('Client-defined order identifier.'),
+  },
+  async (args) => {
+    const selector = buildOrderSelectorQuery(args.uuid, args.identifier);
+    if (selector.error || !selector.query) {
+      return {
+        content: [{ type: 'text' as const, text: selector.error || 'Invalid order selector.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPrivate('/v1/order', {
+        method: 'GET',
+        query: selector.query,
+        rateLimitGroupHint: 'default',
+      });
+      const row = (Array.isArray(payload) ? payload[0] : payload) as UpbitOrderRow | undefined;
+      if (!row || typeof row !== 'object') {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected order response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit order:\n${formatUpbitOrderLine(row)}\n\nraw:\n${formatUpbitJson(payload)}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit order', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_closed_orders',
+  'Fetch authenticated closed orders(done/cancel) from Upbit exchange API.',
+  {
+    market: z.string().optional().describe('Optional market code filter (e.g. KRW-BTC).'),
+    state: z
+      .enum(['done', 'cancel'])
+      .optional()
+      .describe('Optional single state filter. Cannot be used with states.'),
+    states: z
+      .array(z.enum(['done', 'cancel']))
+      .min(1)
+      .max(2)
+      .optional()
+      .describe('Optional multi-state filter. Cannot be used with state.'),
+    start_time: z
+      .string()
+      .optional()
+      .describe('Optional start time filter (ISO 8601 with timezone or millisecond timestamp string).'),
+    end_time: z
+      .string()
+      .optional()
+      .describe('Optional end time filter (ISO 8601 with timezone or millisecond timestamp string).'),
+    limit: z.number().int().min(1).max(1000).default(100).describe('Maximum rows to print.'),
+    order_by: z.enum(['asc', 'desc']).default('desc').describe('Sort direction by creation time.'),
+  },
+  async (args) => {
+    if (args.state && args.states && args.states.length > 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'Use either state or states, not both.' }],
+        isError: true,
+      };
+    }
+
+    const query: UpbitQuery = {
+      order_by: args.order_by,
+      limit: args.limit,
+    };
+
+    const market = normalizeOptionalString(args.market);
+    if (market) {
+      query.market = market.toUpperCase();
+    }
+    const startTime = normalizeOptionalString(args.start_time);
+    if (startTime) {
+      query.start_time = startTime;
+    }
+    const endTime = normalizeOptionalString(args.end_time);
+    if (endTime) {
+      query.end_time = endTime;
+    }
+    if (args.states && args.states.length > 0) {
+      query['states[]'] = args.states;
+    } else if (args.state) {
+      query.state = args.state;
+    }
+
+    try {
+      const payload = await requestUpbitPrivate('/v1/orders/closed', {
+        method: 'GET',
+        query,
+        rateLimitGroupHint: 'default',
+      });
+      if (!Array.isArray(payload)) {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected closed orders response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitOrderRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No closed orders found.' }] };
+      }
+
+      const lines = rows
+        .slice(0, args.limit)
+        .map((row) => formatUpbitOrderLine(row))
+        .join('\n');
+      const suffix = rows.length > args.limit ? `\n... (${rows.length - args.limit} more)` : '';
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit closed orders:\n${lines}${suffix}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit closed orders', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_cancel_order',
+  'Cancel one authenticated open order by uuid or identifier.',
+  {
+    uuid: z.string().optional().describe('Upbit order UUID.'),
+    identifier: z.string().optional().describe('Client-defined order identifier.'),
+    confirm_cancel: z
+      .boolean()
+      .default(false)
+      .describe('Must be true to execute cancel request.'),
+  },
+  async (args) => {
+    if (!args.confirm_cancel) {
+      return {
+        content: [{ type: 'text' as const, text: 'Order cancel is blocked until confirm_cancel=true.' }],
+        isError: true,
+      };
+    }
+
+    const selector = buildOrderSelectorQuery(args.uuid, args.identifier);
+    if (selector.error || !selector.query) {
+      return {
+        content: [{ type: 'text' as const, text: selector.error || 'Invalid order selector.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPrivate('/v1/order', {
+        method: 'DELETE',
+        query: selector.query,
+        rateLimitGroupHint: 'default',
+        maxRetries: 0,
+      });
+      const rows = (Array.isArray(payload) ? payload : [payload]).filter(
+        (row): row is UpbitOrderRow => !!row && typeof row === 'object',
+      );
+      if (rows.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected cancel order response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+      const lines = rows.map((row) => formatUpbitOrderLine(row)).join('\n');
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit cancel order response:\n${lines}\n\nraw:\n${formatUpbitJson(payload)}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to cancel Upbit order', error);
     }
   },
 );

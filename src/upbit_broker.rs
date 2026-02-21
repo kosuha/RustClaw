@@ -103,7 +103,11 @@ enum AllowedEndpoint {
     Ticker,
     Orderbook,
     Accounts,
+    OrderChance,
+    OrderGet,
+    OrderCancel,
     OpenOrders,
+    ClosedOrders,
     OrderTest,
     OrderCreate,
 }
@@ -115,7 +119,11 @@ impl AllowedEndpoint {
             (UpbitHttpMethod::Get, "/v1/ticker") => Some(Self::Ticker),
             (UpbitHttpMethod::Get, "/v1/orderbook") => Some(Self::Orderbook),
             (UpbitHttpMethod::Get, "/v1/accounts") => Some(Self::Accounts),
+            (UpbitHttpMethod::Get, "/v1/orders/chance") => Some(Self::OrderChance),
+            (UpbitHttpMethod::Get, "/v1/order") => Some(Self::OrderGet),
+            (UpbitHttpMethod::Delete, "/v1/order") => Some(Self::OrderCancel),
             (UpbitHttpMethod::Get, "/v1/orders/open") => Some(Self::OpenOrders),
+            (UpbitHttpMethod::Get, "/v1/orders/closed") => Some(Self::ClosedOrders),
             (UpbitHttpMethod::Post, "/v1/orders/test") => Some(Self::OrderTest),
             (UpbitHttpMethod::Post, "/v1/orders") => Some(Self::OrderCreate),
             _ => None,
@@ -125,7 +133,14 @@ impl AllowedEndpoint {
     fn requires_auth(self) -> bool {
         matches!(
             self,
-            Self::Accounts | Self::OpenOrders | Self::OrderTest | Self::OrderCreate
+            Self::Accounts
+                | Self::OrderChance
+                | Self::OrderGet
+                | Self::OrderCancel
+                | Self::OpenOrders
+                | Self::ClosedOrders
+                | Self::OrderTest
+                | Self::OrderCreate
         )
     }
 
@@ -134,7 +149,12 @@ impl AllowedEndpoint {
             Self::Markets => "market",
             Self::Ticker => "ticker",
             Self::Orderbook => "orderbook",
-            Self::Accounts | Self::OpenOrders => "default",
+            Self::Accounts
+            | Self::OrderChance
+            | Self::OrderGet
+            | Self::OrderCancel
+            | Self::OpenOrders
+            | Self::ClosedOrders => "default",
             Self::OrderTest => "order-test",
             Self::OrderCreate => "order",
         }
@@ -337,9 +357,57 @@ fn prepare_request(request: &UpbitHttpRequest) -> Result<PreparedRequest, String
                 idempotency_key: None,
             })
         }
+        AllowedEndpoint::OrderChance => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "market query is required.".to_string())?;
+            ensure_allowed_keys(Some(query), &["market"])?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+
+            let market = query
+                .get("market")
+                .and_then(value_as_string)
+                .ok_or_else(|| "market is required.".to_string())
+                .and_then(|raw| normalize_market_code(raw.as_str()))?;
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs: vec![("market".to_string(), market)],
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::OrderGet | AllowedEndpoint::OrderCancel => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "uuid or identifier query is required.".to_string())?;
+            ensure_allowed_keys(Some(query), &["uuid", "identifier"])?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+            let query_pairs = build_order_lookup_query_pairs(Some(query))?;
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
         AllowedEndpoint::OpenOrders => {
             let query = request.query.as_ref();
-            ensure_allowed_keys(query, &["market", "states[]", "limit", "order_by"])?;
+            ensure_allowed_keys(
+                query,
+                &["market", "state", "states[]", "page", "limit", "order_by"],
+            )?;
             ensure_allowed_keys(request.body.as_ref(), &[])?;
 
             let mut query_pairs = Vec::new();
@@ -350,21 +418,105 @@ fn prepare_request(request: &UpbitHttpRequest) -> Result<PreparedRequest, String
                 query_pairs.push(("market".to_string(), normalized));
             }
 
-            let states = match query.and_then(|map| map.get("states[]")) {
-                Some(value) => parse_states(value)?,
-                None => vec!["wait".to_string(), "watch".to_string()],
-            };
-            for state in states {
-                query_pairs.push(("states[]".to_string(), state));
+            let state_pairs =
+                build_state_filter_query_pairs(query, &["wait", "watch"], "state", "states[]")?;
+            query_pairs.extend(state_pairs);
+
+            let page = query
+                .and_then(|map| map.get("page"))
+                .map(parse_u32_like)
+                .transpose()?
+                .unwrap_or(1);
+            if page == 0 {
+                return Err("page must be greater than 0.".to_string());
+            }
+            query_pairs.push(("page".to_string(), page.to_string()));
+
+            let limit = query
+                .and_then(|map| map.get("limit"))
+                .map(parse_u32_like)
+                .transpose()?
+                .unwrap_or(100);
+            if !(1..=100).contains(&limit) {
+                return Err("limit must be within 1..=100.".to_string());
+            }
+            query_pairs.push(("limit".to_string(), limit.to_string()));
+
+            let order_by = query
+                .and_then(|map| map.get("order_by"))
+                .and_then(value_as_string)
+                .unwrap_or_else(|| "desc".to_string())
+                .to_ascii_lowercase();
+            if order_by != "asc" && order_by != "desc" {
+                return Err("order_by must be asc or desc.".to_string());
+            }
+            query_pairs.push(("order_by".to_string(), order_by));
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::ClosedOrders => {
+            let query = request.query.as_ref();
+            ensure_allowed_keys(
+                query,
+                &[
+                    "market",
+                    "state",
+                    "states[]",
+                    "start_time",
+                    "end_time",
+                    "limit",
+                    "order_by",
+                ],
+            )?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+
+            let mut query_pairs = Vec::new();
+            if let Some(market_value) = query.and_then(|map| map.get("market")) {
+                let market = value_as_string(market_value)
+                    .ok_or_else(|| "market must be a string.".to_string())?;
+                let normalized = normalize_market_code(&market)?;
+                query_pairs.push(("market".to_string(), normalized));
+            }
+
+            let state_pairs =
+                build_state_filter_query_pairs(query, &["done", "cancel"], "state", "states[]")?;
+            query_pairs.extend(state_pairs);
+
+            if let Some(start_time) = query
+                .and_then(|map| map.get("start_time"))
+                .and_then(value_as_string)
+            {
+                if start_time.is_empty() {
+                    return Err("start_time cannot be empty.".to_string());
+                }
+                query_pairs.push(("start_time".to_string(), start_time));
+            }
+            if let Some(end_time) = query
+                .and_then(|map| map.get("end_time"))
+                .and_then(value_as_string)
+            {
+                if end_time.is_empty() {
+                    return Err("end_time cannot be empty.".to_string());
+                }
+                query_pairs.push(("end_time".to_string(), end_time));
             }
 
             let limit = query
                 .and_then(|map| map.get("limit"))
                 .map(parse_u32_like)
                 .transpose()?
-                .unwrap_or(20);
-            if !(1..=100).contains(&limit) {
-                return Err("limit must be within 1..=100.".to_string());
+                .unwrap_or(100);
+            if !(1..=1_000).contains(&limit) {
+                return Err("limit must be within 1..=1000.".to_string());
             }
             query_pairs.push(("limit".to_string(), limit.to_string()));
 
@@ -815,7 +967,63 @@ fn normalize_market_code(raw: &str) -> Result<String, String> {
     Ok(value)
 }
 
-fn parse_states(value: &Value) -> Result<Vec<String>, String> {
+fn build_order_lookup_query_pairs(
+    query: Option<&Map<String, Value>>,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(map) = query else {
+        return Err("uuid or identifier query is required.".to_string());
+    };
+    let uuid = map
+        .get("uuid")
+        .and_then(value_as_string)
+        .filter(|value| !value.is_empty());
+    let identifier = map
+        .get("identifier")
+        .and_then(value_as_string)
+        .filter(|value| !value.is_empty());
+
+    match (uuid, identifier) {
+        (Some(_), Some(_)) => Err("provide only one of uuid or identifier.".to_string()),
+        (Some(uuid), None) => Ok(vec![("uuid".to_string(), uuid)]),
+        (None, Some(identifier)) => Ok(vec![("identifier".to_string(), identifier)]),
+        (None, None) => Err("either uuid or identifier is required.".to_string()),
+    }
+}
+
+fn build_state_filter_query_pairs(
+    query: Option<&Map<String, Value>>,
+    allowed_states: &[&str],
+    single_key: &str,
+    multi_key: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(map) = query else {
+        return Ok(Vec::new());
+    };
+    let single = map.get(single_key);
+    let multiple = map.get(multi_key);
+    if single.is_some() && multiple.is_some() {
+        return Err(format!("cannot use {single_key} and {multi_key} together."));
+    }
+
+    if let Some(value) = single {
+        let states = parse_state_values(value, allowed_states, single_key)?;
+        return Ok(vec![(single_key.to_string(), states[0].clone())]);
+    }
+    if let Some(value) = multiple {
+        let states = parse_state_values(value, allowed_states, multi_key)?;
+        return Ok(states
+            .into_iter()
+            .map(|state| (multi_key.to_string(), state))
+            .collect());
+    }
+    Ok(Vec::new())
+}
+
+fn parse_state_values(
+    value: &Value,
+    allowed_states: &[&str],
+    field_name: &str,
+) -> Result<Vec<String>, String> {
     let values = match value {
         Value::Array(items) => items
             .iter()
@@ -826,14 +1034,20 @@ fn parse_states(value: &Value) -> Result<Vec<String>, String> {
             .unwrap_or_default(),
     };
     if values.is_empty() {
-        return Err("states[] cannot be empty.".to_string());
+        return Err(format!("{field_name} cannot be empty."));
     }
 
     let mut normalized = Vec::new();
     for state in values {
         let state = state.to_ascii_lowercase();
-        if state != "wait" && state != "watch" {
-            return Err("states[] supports only wait or watch.".to_string());
+        if !allowed_states
+            .iter()
+            .any(|allowed| *allowed == state.as_str())
+        {
+            return Err(format!(
+                "{field_name} supports only {}.",
+                allowed_states.join(", ")
+            ));
         }
         if !normalized.iter().any(|existing| existing == &state) {
             normalized.push(state);
@@ -1239,9 +1453,39 @@ mod tests {
     }
 
     #[test]
-    fn states_parser_accepts_wait_watch_only() {
-        let ok = parse_states(&json!(["wait", "watch"])).expect("parse states");
+    fn state_parser_enforces_allowed_values() {
+        let ok = parse_state_values(&json!(["wait", "watch"]), &["wait", "watch"], "states[]")
+            .expect("parse states");
         assert_eq!(ok, vec!["wait".to_string(), "watch".to_string()]);
-        assert!(parse_states(&json!(["done"])).is_err());
+        assert!(parse_state_values(&json!(["done"]), &["wait", "watch"], "states[]").is_err());
+    }
+
+    #[test]
+    fn state_filter_rejects_mixed_single_and_multi_keys() {
+        let query = json!({
+            "state": "wait",
+            "states[]": ["wait", "watch"]
+        });
+        let map = query.as_object().expect("query map");
+        let err =
+            build_state_filter_query_pairs(Some(map), &["wait", "watch"], "state", "states[]")
+                .expect_err("mixed key should fail");
+        assert!(err.contains("cannot use state and states[] together"));
+    }
+
+    #[test]
+    fn order_lookup_requires_single_selector() {
+        let empty = json!({});
+        let empty_map = empty.as_object().expect("empty map");
+        assert!(build_order_lookup_query_pairs(Some(empty_map)).is_err());
+
+        let both = json!({"uuid": "a", "identifier": "b"});
+        let both_map = both.as_object().expect("both map");
+        assert!(build_order_lookup_query_pairs(Some(both_map)).is_err());
+
+        let only_uuid = json!({"uuid": "abc"});
+        let only_uuid_map = only_uuid.as_object().expect("uuid map");
+        let pairs = build_order_lookup_query_pairs(Some(only_uuid_map)).expect("uuid parse");
+        assert_eq!(pairs, vec![("uuid".to_string(), "abc".to_string())]);
     }
 }
