@@ -102,6 +102,12 @@ enum AllowedEndpoint {
     Markets,
     Ticker,
     Orderbook,
+    TradesTicks,
+    CandleMinutes,
+    CandleDays,
+    CandleWeeks,
+    CandleMonths,
+    CandleYears,
     Accounts,
     OrderChance,
     OrderGet,
@@ -118,6 +124,14 @@ impl AllowedEndpoint {
             (UpbitHttpMethod::Get, "/v1/market/all") => Some(Self::Markets),
             (UpbitHttpMethod::Get, "/v1/ticker") => Some(Self::Ticker),
             (UpbitHttpMethod::Get, "/v1/orderbook") => Some(Self::Orderbook),
+            (UpbitHttpMethod::Get, "/v1/trades/ticks") => Some(Self::TradesTicks),
+            (UpbitHttpMethod::Get, "/v1/candles/days") => Some(Self::CandleDays),
+            (UpbitHttpMethod::Get, "/v1/candles/weeks") => Some(Self::CandleWeeks),
+            (UpbitHttpMethod::Get, "/v1/candles/months") => Some(Self::CandleMonths),
+            (UpbitHttpMethod::Get, "/v1/candles/years") => Some(Self::CandleYears),
+            (UpbitHttpMethod::Get, path) if is_candle_minutes_path(path) => {
+                Some(Self::CandleMinutes)
+            }
             (UpbitHttpMethod::Get, "/v1/accounts") => Some(Self::Accounts),
             (UpbitHttpMethod::Get, "/v1/orders/chance") => Some(Self::OrderChance),
             (UpbitHttpMethod::Get, "/v1/order") => Some(Self::OrderGet),
@@ -149,6 +163,12 @@ impl AllowedEndpoint {
             Self::Markets => "market",
             Self::Ticker => "ticker",
             Self::Orderbook => "orderbook",
+            Self::TradesTicks => "trade",
+            Self::CandleMinutes
+            | Self::CandleDays
+            | Self::CandleWeeks
+            | Self::CandleMonths
+            | Self::CandleYears => "candle",
             Self::Accounts
             | Self::OrderChance
             | Self::OrderGet
@@ -331,6 +351,142 @@ fn prepare_request(request: &UpbitHttpRequest) -> Result<PreparedRequest, String
                 .ok_or_else(|| "markets must be a comma-separated string.".to_string())?;
             let markets = normalize_markets_csv(&markets_raw)?;
             let query_pairs = vec![("markets".to_string(), markets.join(","))];
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::TradesTicks => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "market query is required.".to_string())?;
+            ensure_allowed_keys(
+                Some(query),
+                &["market", "to", "count", "cursor", "days_ago"],
+            )?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+
+            let market = query
+                .get("market")
+                .and_then(value_as_string)
+                .ok_or_else(|| "market is required.".to_string())
+                .and_then(|raw| normalize_market_code(raw.as_str()))?;
+
+            let mut query_pairs = vec![("market".to_string(), market)];
+            if let Some(to) = query.get("to").and_then(value_as_string) {
+                if to.is_empty() {
+                    return Err("to cannot be empty.".to_string());
+                }
+                query_pairs.push(("to".to_string(), to));
+            }
+            let count = query
+                .get("count")
+                .map(parse_u32_like)
+                .transpose()?
+                .unwrap_or(1);
+            if !(1..=500).contains(&count) {
+                return Err("count must be within 1..=500.".to_string());
+            }
+            query_pairs.push(("count".to_string(), count.to_string()));
+            if let Some(cursor) = query.get("cursor").and_then(value_as_string) {
+                if cursor.is_empty() {
+                    return Err("cursor cannot be empty.".to_string());
+                }
+                query_pairs.push(("cursor".to_string(), cursor));
+            }
+            if let Some(days_ago) = query.get("days_ago") {
+                let value = parse_u32_like(days_ago)?;
+                if !(1..=7).contains(&value) {
+                    return Err("days_ago must be within 1..=7.".to_string());
+                }
+                query_pairs.push(("days_ago".to_string(), value.to_string()));
+            }
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::CandleMinutes => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "market query is required.".to_string())?;
+            ensure_allowed_keys(Some(query), &["market", "to", "count"])?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+
+            let unit = parse_candle_minutes_unit(path.as_str())?;
+            let path = format!("/v1/candles/minutes/{unit}");
+            let query_pairs = build_candle_query_pairs(query, 200)?;
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::CandleDays => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "market query is required.".to_string())?;
+            ensure_allowed_keys(
+                Some(query),
+                &["market", "to", "count", "converting_price_unit"],
+            )?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+
+            let mut query_pairs = build_candle_query_pairs(query, 200)?;
+            if let Some(unit) = query.get("converting_price_unit").and_then(value_as_string) {
+                if unit.is_empty() {
+                    return Err("converting_price_unit cannot be empty.".to_string());
+                }
+                query_pairs.push((
+                    "converting_price_unit".to_string(),
+                    unit.to_ascii_uppercase(),
+                ));
+            }
+
+            Ok(PreparedRequest {
+                endpoint,
+                method,
+                path,
+                query_pairs,
+                body_pairs: Vec::new(),
+                body_json: None,
+                max_retries,
+                idempotency_key: None,
+            })
+        }
+        AllowedEndpoint::CandleWeeks
+        | AllowedEndpoint::CandleMonths
+        | AllowedEndpoint::CandleYears => {
+            let query = request
+                .query
+                .as_ref()
+                .ok_or_else(|| "market query is required.".to_string())?;
+            ensure_allowed_keys(Some(query), &["market", "to", "count"])?;
+            ensure_allowed_keys(request.body.as_ref(), &[])?;
+            let query_pairs = build_candle_query_pairs(query, 200)?;
 
             Ok(PreparedRequest {
                 endpoint,
@@ -967,6 +1123,57 @@ fn normalize_market_code(raw: &str) -> Result<String, String> {
     Ok(value)
 }
 
+fn build_candle_query_pairs(
+    query: &Map<String, Value>,
+    max_count: u32,
+) -> Result<Vec<(String, String)>, String> {
+    let market = query
+        .get("market")
+        .and_then(value_as_string)
+        .ok_or_else(|| "market is required.".to_string())
+        .and_then(|raw| normalize_market_code(raw.as_str()))?;
+
+    let mut query_pairs = vec![("market".to_string(), market)];
+    if let Some(to) = query.get("to").and_then(value_as_string) {
+        if to.is_empty() {
+            return Err("to cannot be empty.".to_string());
+        }
+        query_pairs.push(("to".to_string(), to));
+    }
+
+    let count = query
+        .get("count")
+        .map(parse_u32_like)
+        .transpose()?
+        .unwrap_or(1);
+    if !(1..=max_count).contains(&count) {
+        return Err(format!("count must be within 1..={max_count}."));
+    }
+    query_pairs.push(("count".to_string(), count.to_string()));
+    Ok(query_pairs)
+}
+
+fn is_candle_minutes_path(path: &str) -> bool {
+    parse_candle_minutes_unit(path).is_ok()
+}
+
+fn parse_candle_minutes_unit(path: &str) -> Result<u32, String> {
+    const PREFIX: &str = "/v1/candles/minutes/";
+    let Some(unit_raw) = path.strip_prefix(PREFIX) else {
+        return Err("invalid minute candles path.".to_string());
+    };
+    if unit_raw.is_empty() || unit_raw.contains('/') {
+        return Err("invalid minute candles unit path.".to_string());
+    }
+    let unit = unit_raw
+        .parse::<u32>()
+        .map_err(|_| format!("invalid minute candle unit: {unit_raw}"))?;
+    if !matches!(unit, 1 | 3 | 5 | 10 | 15 | 30 | 60 | 240) {
+        return Err(format!("unsupported minute candle unit: {unit}"));
+    }
+    Ok(unit)
+}
+
 fn build_order_lookup_query_pairs(
     query: Option<&Map<String, Value>>,
 ) -> Result<Vec<(String, String)>, String> {
@@ -1487,5 +1694,34 @@ mod tests {
         let only_uuid_map = only_uuid.as_object().expect("uuid map");
         let pairs = build_order_lookup_query_pairs(Some(only_uuid_map)).expect("uuid parse");
         assert_eq!(pairs, vec![("uuid".to_string(), "abc".to_string())]);
+    }
+
+    #[test]
+    fn candle_minutes_unit_parser_validates_supported_units() {
+        let ok = parse_candle_minutes_unit("/v1/candles/minutes/15").expect("unit parse");
+        assert_eq!(ok, 15);
+        assert!(parse_candle_minutes_unit("/v1/candles/minutes/2").is_err());
+        assert!(parse_candle_minutes_unit("/v1/candles/minutes/15/extra").is_err());
+    }
+
+    #[test]
+    fn candle_query_builder_requires_market_and_count_range() {
+        let query = json!({
+            "market": "KRW-BTC",
+            "count": 200
+        });
+        let map = query.as_object().expect("query map");
+        let pairs = build_candle_query_pairs(map, 200).expect("candle query");
+        assert_eq!(
+            pairs,
+            vec![
+                ("market".to_string(), "KRW-BTC".to_string()),
+                ("count".to_string(), "200".to_string())
+            ]
+        );
+
+        let bad = json!({"market": "KRW-BTC", "count": 201});
+        let bad_map = bad.as_object().expect("bad map");
+        assert!(build_candle_query_pairs(bad_map, 200).is_err());
     }
 }

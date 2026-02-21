@@ -101,6 +101,30 @@ type UpbitOrderbookRow = {
   orderbook_units?: UpbitOrderbookUnit[];
 };
 
+type UpbitCandleRow = {
+  market?: string;
+  candle_date_time_utc?: string;
+  candle_date_time_kst?: string;
+  opening_price?: number | string;
+  high_price?: number | string;
+  low_price?: number | string;
+  trade_price?: number | string;
+  candle_acc_trade_price?: number | string;
+  candle_acc_trade_volume?: number | string;
+  unit?: number;
+};
+
+type UpbitTradeTickRow = {
+  market?: string;
+  trade_date_utc?: string;
+  trade_time_utc?: string;
+  timestamp?: number | string;
+  trade_price?: number | string;
+  trade_volume?: number | string;
+  ask_bid?: string;
+  sequential_id?: number | string;
+};
+
 type UpbitOrderRow = {
   uuid?: string;
   identifier?: string;
@@ -454,6 +478,28 @@ function formatUpbitOrderLine(row: UpbitOrderRow): string {
   return `- ${id}: ${market} ${side}/${orderType}, state=${state}, remaining=${remain}, executed=${executed}, price=${price}`;
 }
 
+function formatUpbitCandleLine(row: UpbitCandleRow): string {
+  const market = row.market || 'UNKNOWN';
+  const time = row.candle_date_time_kst || row.candle_date_time_utc || 'unknown_time';
+  const open = formatFixed(row.opening_price, 8);
+  const high = formatFixed(row.high_price, 8);
+  const low = formatFixed(row.low_price, 8);
+  const close = formatFixed(row.trade_price, 8);
+  const volume = formatFixed(row.candle_acc_trade_volume, 8);
+  const unit = typeof row.unit === 'number' ? `, unit=${row.unit}m` : '';
+  return `- ${market} @ ${time}: O=${open}, H=${high}, L=${low}, C=${close}, V=${volume}${unit}`;
+}
+
+function formatUpbitTradeLine(row: UpbitTradeTickRow): string {
+  const market = row.market || 'UNKNOWN';
+  const time = [row.trade_date_utc, row.trade_time_utc].filter(Boolean).join(' ') || 'unknown_time';
+  const price = formatFixed(row.trade_price, 8);
+  const volume = formatFixed(row.trade_volume, 8);
+  const side = row.ask_bid || 'unknown';
+  const seq = row.sequential_id ? `, seq=${String(row.sequential_id)}` : '';
+  return `- ${market} @ ${time}: price=${price}, volume=${volume}, side=${side}${seq}`;
+}
+
 function parsePositiveNumber(value: string | undefined): number | null {
   if (!value) {
     return null;
@@ -758,6 +804,232 @@ server.tool(
       return upbitToolError('Failed to fetch Upbit orderbook', error);
     }
   },
+);
+
+server.tool(
+  'upbit_get_recent_trades',
+  'Fetch recent trades from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    count: z.number().int().min(1).max(500).default(20).describe('Number of trade rows to fetch.'),
+    to: z
+      .string()
+      .optional()
+      .describe('Optional UTC time cursor in HHmmss or HH:mm:ss format for the selected day.'),
+    cursor: z.string().optional().describe('Optional pagination cursor(sequential_id).'),
+    days_ago: z.number().int().min(1).max(7).optional().describe('Optional day offset(1..7, UTC-based).'),
+  },
+  async (args) => {
+    const market = args.market.trim().toUpperCase();
+    if (!market) {
+      return {
+        content: [{ type: 'text' as const, text: 'market is required.' }],
+        isError: true,
+      };
+    }
+
+    const query: UpbitQuery = {
+      market,
+      count: args.count,
+      to: normalizeOptionalString(args.to),
+      cursor: normalizeOptionalString(args.cursor),
+      days_ago: args.days_ago,
+    };
+
+    try {
+      const payload = await requestUpbitPublic('/v1/trades/ticks', query);
+      if (!Array.isArray(payload)) {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected recent trades response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitTradeTickRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No recent trades returned.' }] };
+      }
+
+      const lines = rows.map((row) => formatUpbitTradeLine(row)).join('\n');
+      return {
+        content: [{ type: 'text' as const, text: `Upbit recent trades:\n${lines}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit recent trades', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_candles_minutes',
+  'Fetch minute candles from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    unit: z
+      .enum(['1', '3', '5', '10', '15', '30', '60', '240'])
+      .default('15')
+      .describe('Minute candle unit.'),
+    count: z.number().int().min(1).max(200).default(30).describe('Number of candles to fetch.'),
+    to: z.string().optional().describe('Optional candle end time (ISO 8601).'),
+  },
+  async (args) => {
+    const market = args.market.trim().toUpperCase();
+    if (!market) {
+      return {
+        content: [{ type: 'text' as const, text: 'market is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPublic(`/v1/candles/minutes/${args.unit}`, {
+        market,
+        count: args.count,
+        to: normalizeOptionalString(args.to),
+      });
+      if (!Array.isArray(payload)) {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected minute candles response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitCandleRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No minute candles returned.' }] };
+      }
+
+      const lines = rows.map((row) => formatUpbitCandleLine(row)).join('\n');
+      return {
+        content: [{ type: 'text' as const, text: `Upbit minute candles(${args.unit}m):\n${lines}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit minute candles', error);
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_candles_days',
+  'Fetch day candles from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    count: z.number().int().min(1).max(200).default(30).describe('Number of candles to fetch.'),
+    to: z.string().optional().describe('Optional candle end time (ISO 8601).'),
+    converting_price_unit: z
+      .string()
+      .optional()
+      .describe('Optional converted close currency unit (for example KRW).'),
+  },
+  async (args) => {
+    const market = args.market.trim().toUpperCase();
+    if (!market) {
+      return {
+        content: [{ type: 'text' as const, text: 'market is required.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPublic('/v1/candles/days', {
+        market,
+        count: args.count,
+        to: normalizeOptionalString(args.to),
+        converting_price_unit: normalizeOptionalString(args.converting_price_unit)?.toUpperCase(),
+      });
+      if (!Array.isArray(payload)) {
+        return {
+          content: [{ type: 'text' as const, text: `Unexpected day candles response: ${formatUpbitJson(payload)}` }],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitCandleRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No day candles returned.' }] };
+      }
+
+      const lines = rows.map((row) => formatUpbitCandleLine(row)).join('\n');
+      return {
+        content: [{ type: 'text' as const, text: `Upbit day candles:\n${lines}` }],
+      };
+    } catch (error) {
+      return upbitToolError('Failed to fetch Upbit day candles', error);
+    }
+  },
+);
+
+async function runCandlePeriodTool(
+  endpoint: '/v1/candles/weeks' | '/v1/candles/months' | '/v1/candles/years',
+  label: string,
+  args: { market: string; count: number; to?: string },
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: true }> {
+  const market = args.market.trim().toUpperCase();
+  if (!market) {
+    return {
+      content: [{ type: 'text' as const, text: 'market is required.' }],
+      isError: true,
+    };
+  }
+
+  try {
+    const payload = await requestUpbitPublic(endpoint, {
+      market,
+      count: args.count,
+      to: normalizeOptionalString(args.to),
+    });
+    if (!Array.isArray(payload)) {
+      return {
+        content: [{ type: 'text' as const, text: `Unexpected ${label} candles response: ${formatUpbitJson(payload)}` }],
+        isError: true,
+      };
+    }
+
+    const rows = payload as UpbitCandleRow[];
+    if (rows.length === 0) {
+      return { content: [{ type: 'text' as const, text: `No ${label} candles returned.` }] };
+    }
+
+    const lines = rows.map((row) => formatUpbitCandleLine(row)).join('\n');
+    return {
+      content: [{ type: 'text' as const, text: `Upbit ${label} candles:\n${lines}` }],
+    };
+  } catch (error) {
+    return upbitToolError(`Failed to fetch Upbit ${label} candles`, error);
+  }
+}
+
+server.tool(
+  'upbit_get_candles_weeks',
+  'Fetch week candles from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    count: z.number().int().min(1).max(200).default(30).describe('Number of candles to fetch.'),
+    to: z.string().optional().describe('Optional candle end time (ISO 8601).'),
+  },
+  async (args) => runCandlePeriodTool('/v1/candles/weeks', 'week', args),
+);
+
+server.tool(
+  'upbit_get_candles_months',
+  'Fetch month candles from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    count: z.number().int().min(1).max(200).default(30).describe('Number of candles to fetch.'),
+    to: z.string().optional().describe('Optional candle end time (ISO 8601).'),
+  },
+  async (args) => runCandlePeriodTool('/v1/candles/months', 'month', args),
+);
+
+server.tool(
+  'upbit_get_candles_years',
+  'Fetch year candles from Upbit quotation API.',
+  {
+    market: z.string().describe('Market code, e.g. KRW-BTC.'),
+    count: z.number().int().min(1).max(200).default(30).describe('Number of candles to fetch.'),
+    to: z.string().optional().describe('Optional candle end time (ISO 8601).'),
+  },
+  async (args) => runCandlePeriodTool('/v1/candles/years', 'year', args),
 );
 
 server.tool(
