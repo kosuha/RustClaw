@@ -28,6 +28,9 @@ const RUNTIME_OPTIONAL_ENV_KEYS: &[&str] = &[
     "CODEX_ENABLE_SEARCH",
 ];
 
+const DEFAULT_CREDENTIAL_ENV_KEYS: &[&str] =
+    &["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "UPBIT_BASE_URL"];
+
 #[derive(Clone, Debug)]
 pub struct ContainerAgentRunner {
     pub container_binary: String,
@@ -606,11 +609,10 @@ fn collect_runtime_option_envs() -> Vec<(String, String)> {
 }
 
 fn allowed_credential_keys() -> Vec<String> {
-    let Some(raw) = read_env_var("CONTAINER_ALLOWED_CREDENTIAL_KEYS_JSON") else {
-        return Vec::new();
-    };
-
-    parse_allowed_credential_keys(&raw)
+    let extra = read_env_var("CONTAINER_ALLOWED_CREDENTIAL_KEYS_JSON")
+        .map(|raw| parse_allowed_credential_keys(&raw))
+        .unwrap_or_default();
+    merge_allowed_credential_keys(extra)
 }
 
 fn parse_allowed_credential_keys(raw: &str) -> Vec<String> {
@@ -628,6 +630,19 @@ fn parse_allowed_credential_keys(raw: &str) -> Vec<String> {
         }
     }
 
+    keys
+}
+
+fn merge_allowed_credential_keys(extra: Vec<String>) -> Vec<String> {
+    let mut keys = DEFAULT_CREDENTIAL_ENV_KEYS
+        .iter()
+        .map(|key| (*key).to_string())
+        .collect::<Vec<_>>();
+    for key in extra {
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
     keys
 }
 
@@ -798,6 +813,36 @@ mod tests {
     fn parse_allowed_credential_keys_deduplicates_and_trims() {
         let keys = parse_allowed_credential_keys(r#"[" MY_KEY ","", "MY_KEY", "SECOND_KEY"]"#);
         assert_eq!(keys, vec!["MY_KEY".to_string(), "SECOND_KEY".to_string()]);
+    }
+
+    #[test]
+    fn merge_allowed_credential_keys_includes_defaults() {
+        let keys = merge_allowed_credential_keys(Vec::new());
+        assert_eq!(
+            keys,
+            vec![
+                "UPBIT_ACCESS_KEY".to_string(),
+                "UPBIT_SECRET_KEY".to_string(),
+                "UPBIT_BASE_URL".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_allowed_credential_keys_appends_unique_extras() {
+        let keys = merge_allowed_credential_keys(vec![
+            "UPBIT_SECRET_KEY".to_string(),
+            "MY_API_KEY".to_string(),
+        ]);
+        assert_eq!(
+            keys,
+            vec![
+                "UPBIT_ACCESS_KEY".to_string(),
+                "UPBIT_SECRET_KEY".to_string(),
+                "UPBIT_BASE_URL".to_string(),
+                "MY_API_KEY".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
+import { createHash, createHmac, randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 
 const IPC_DIR = '/workspace/ipc';
@@ -32,6 +33,38 @@ type SkillSnapshotRow = {
 type SkillSnapshotPayload = {
   skills?: SkillSnapshotRow[];
   lastSync?: string;
+};
+
+type UpbitQueryPrimitive = string | number | boolean;
+
+type UpbitQuery = Record<string, UpbitQueryPrimitive | UpbitQueryPrimitive[] | undefined>;
+
+type UpbitCredentials = {
+  accessKey: string;
+  secretKey: string;
+  baseUrl: string;
+};
+
+type UpbitErrorResponse = {
+  error?: {
+    name?: string;
+    message?: string;
+  };
+};
+
+type UpbitTickerRow = {
+  market?: string;
+  trade_price?: number | string;
+  signed_change_rate?: number | string;
+  acc_trade_price_24h?: number | string;
+};
+
+type UpbitBalanceRow = {
+  currency?: string;
+  balance?: string;
+  locked?: string;
+  avg_buy_price?: string;
+  unit_currency?: string;
 };
 
 function writeIpcFile(dir: string, data: object): string {
@@ -109,6 +142,152 @@ function listableSkills(
   });
 }
 
+function normalizeUpbitBaseUrl(raw: string | undefined): string {
+  const baseUrl = (raw || 'https://api.upbit.com').trim();
+  return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+}
+
+function resolveUpbitCredentials(): UpbitCredentials | null {
+  const accessKey = process.env.UPBIT_ACCESS_KEY?.trim();
+  const secretKey = process.env.UPBIT_SECRET_KEY?.trim();
+  if (!accessKey || !secretKey) {
+    return null;
+  }
+
+  return {
+    accessKey,
+    secretKey,
+    baseUrl: normalizeUpbitBaseUrl(process.env.UPBIT_BASE_URL),
+  };
+}
+
+function buildUpbitQueryString(params: UpbitQuery = {}): string {
+  const searchParams = new URLSearchParams();
+  for (const [key, rawValue] of Object.entries(params)) {
+    if (typeof rawValue === 'undefined') {
+      continue;
+    }
+    if (Array.isArray(rawValue)) {
+      for (const item of rawValue) {
+        searchParams.append(key, String(item));
+      }
+      continue;
+    }
+    searchParams.append(key, String(rawValue));
+  }
+
+  return searchParams.toString().replaceAll('%5B%5D', '[]');
+}
+
+function createUpbitJwt(credentials: UpbitCredentials, queryString: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS512', typ: 'JWT' })).toString('base64url');
+  const payloadData: Record<string, string> = {
+    access_key: credentials.accessKey,
+    nonce: randomUUID(),
+  };
+
+  if (queryString) {
+    payloadData.query_hash = createHash('sha512').update(queryString, 'utf8').digest('hex');
+    payloadData.query_hash_alg = 'SHA512';
+  }
+
+  const payload = Buffer.from(JSON.stringify(payloadData)).toString('base64url');
+  const signingInput = `${header}.${payload}`;
+  const signature = createHmac('sha512', credentials.secretKey)
+    .update(signingInput, 'utf8')
+    .digest('base64url');
+  return `${signingInput}.${signature}`;
+}
+
+async function parseUpbitResponse(response: Response): Promise<unknown> {
+  const bodyText = await response.text();
+  let parsed: unknown = null;
+  if (bodyText.trim().length > 0) {
+    try {
+      parsed = JSON.parse(bodyText) as unknown;
+    } catch {
+      parsed = bodyText;
+    }
+  }
+
+  if (!response.ok) {
+    const payload = parsed as UpbitErrorResponse | string | null;
+    const detail =
+      typeof payload === 'string'
+        ? payload
+        : payload?.error?.message || JSON.stringify(payload || {});
+    throw new Error(`Upbit API request failed (${response.status}): ${detail}`);
+  }
+
+  return parsed;
+}
+
+async function requestUpbitPublic(pathname: string, query?: UpbitQuery): Promise<unknown> {
+  const baseUrl = normalizeUpbitBaseUrl(process.env.UPBIT_BASE_URL);
+  const queryString = buildUpbitQueryString(query);
+  const requestUrl = `${baseUrl}${pathname}${queryString ? `?${queryString}` : ''}`;
+  const response = await fetch(requestUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  return parseUpbitResponse(response);
+}
+
+async function requestUpbitPrivate(pathname: string, query?: UpbitQuery): Promise<unknown> {
+  const credentials = resolveUpbitCredentials();
+  if (!credentials) {
+    throw new Error(
+      'Missing credentials. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in environment variables.',
+    );
+  }
+
+  const queryString = buildUpbitQueryString(query);
+  const requestUrl = `${credentials.baseUrl}${pathname}${queryString ? `?${queryString}` : ''}`;
+  const token = createUpbitJwt(credentials, queryString);
+
+  const response = await fetch(requestUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  return parseUpbitResponse(response);
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function formatFixed(value: unknown, digits = 8): string {
+  const numeric = asNumber(value);
+  if (numeric === null) {
+    return 'n/a';
+  }
+  return numeric.toFixed(digits);
+}
+
+function formatPercent(value: unknown): string {
+  const numeric = asNumber(value);
+  if (numeric === null) {
+    return 'n/a';
+  }
+  return `${(numeric * 100).toFixed(2)}%`;
+}
+
 const server = new McpServer({
   name: 'nanoclaw',
   version: '1.0.0',
@@ -134,6 +313,140 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+  },
+);
+
+server.tool(
+  'upbit_get_ticker',
+  'Fetch ticker snapshots from Upbit quotation API for one or more markets (for example: KRW-BTC, KRW-ETH).',
+  {
+    markets: z
+      .array(z.string())
+      .min(1)
+      .max(20)
+      .describe('Upbit market codes (e.g. KRW-BTC, KRW-ETH).'),
+  },
+  async (args) => {
+    const markets = Array.from(
+      new Set(
+        args.markets
+          .map((market) => market.trim().toUpperCase())
+          .filter((market) => market.length > 0),
+      ),
+    );
+    if (markets.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'No valid markets were provided.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const payload = await requestUpbitPublic('/v1/ticker', {
+        markets: markets.join(','),
+      });
+      if (!Array.isArray(payload)) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Unexpected ticker response: ${JSON.stringify(payload)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitTickerRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No ticker data returned.' }] };
+      }
+
+      const lines = rows
+        .map((row) => {
+          const market = row.market || 'UNKNOWN';
+          return `- ${market}: price=${formatFixed(row.trade_price, 2)}, change=${formatPercent(row.signed_change_rate)}, value_24h=${formatFixed(row.acc_trade_price_24h, 2)}`;
+        })
+        .join('\n');
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit ticker:\n${lines}` }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to fetch Upbit ticker: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'upbit_get_balances',
+  'Fetch authenticated account balances from Upbit exchange API. Requires UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY environment variables.',
+  {
+    hide_zero_balances: z
+      .boolean()
+      .default(true)
+      .describe('If true, hide assets where both balance and locked are 0.'),
+  },
+  async (args) => {
+    try {
+      const payload = await requestUpbitPrivate('/v1/accounts');
+      if (!Array.isArray(payload)) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Unexpected balance response: ${JSON.stringify(payload)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const rows = payload as UpbitBalanceRow[];
+      const filtered = rows.filter((row) => {
+        if (!args.hide_zero_balances) {
+          return true;
+        }
+        const balance = asNumber(row.balance) || 0;
+        const locked = asNumber(row.locked) || 0;
+        return balance > 0 || locked > 0;
+      });
+
+      if (filtered.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No balances matched the filter.' }] };
+      }
+
+      const lines = filtered
+        .map((row) => {
+          const currency = row.currency || 'UNKNOWN';
+          const unit = row.unit_currency || '';
+          const avgBuyPrice = formatFixed(row.avg_buy_price, 8);
+          return `- ${currency}: balance=${formatFixed(row.balance, 8)}, locked=${formatFixed(row.locked, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}`;
+        })
+        .join('\n');
+
+      return {
+        content: [{ type: 'text' as const, text: `Upbit balances:\n${lines}` }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to fetch Upbit balances: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 
