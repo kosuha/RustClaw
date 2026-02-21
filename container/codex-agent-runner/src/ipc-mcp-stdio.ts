@@ -1238,7 +1238,10 @@ server.tool(
       const currencies = Array.from(
         new Set(
           filtered
-            .map((row) => (row.currency || '').trim().toUpperCase())
+            .flatMap((row) => [
+              (row.currency || '').trim().toUpperCase(),
+              (row.unit_currency || '').trim().toUpperCase(),
+            ])
             .filter((currency) => currency.length > 0),
         ),
       );
@@ -1251,16 +1254,23 @@ server.tool(
       let totalUsdt = 0;
       let pricedRowsKrw = 0;
       let pricedRowsUsdt = 0;
+      let totalPnlKrw = 0;
+      let totalPnlUsdt = 0;
+      let totalCostKrw = 0;
+      let totalCostUsdt = 0;
+      let pnlRowsKrw = 0;
+      let pnlRowsUsdt = 0;
       const unpricedInKrw: string[] = [];
       const unpricedInUsdt: string[] = [];
 
       const lines = filtered
         .map((row) => {
           const currency = (row.currency || 'UNKNOWN').trim().toUpperCase();
-          const unit = row.unit_currency || '';
+          const unit = (row.unit_currency || '').trim().toUpperCase();
           const free = asNumber(row.balance) || 0;
           const locked = asNumber(row.locked) || 0;
           const totalAmount = free + locked;
+          const avgBuyPriceNumber = asNumber(row.avg_buy_price);
           const avgBuyPrice = formatFixed(row.avg_buy_price, 8);
 
           const krwPerUnit = resolveKrwPrice(currency, tickerByMarket);
@@ -1273,6 +1283,32 @@ server.tool(
             typeof usdtPerUnit === 'number' && Number.isFinite(usdtPerUnit)
               ? totalAmount * usdtPerUnit
               : null;
+
+          const costInUnit =
+            typeof avgBuyPriceNumber === 'number' &&
+            Number.isFinite(avgBuyPriceNumber) &&
+            avgBuyPriceNumber > 0 &&
+            totalAmount > 0
+              ? totalAmount * avgBuyPriceNumber
+              : null;
+          const krwPerCostUnit = unit ? resolveKrwPrice(unit, tickerByMarket) : null;
+          const usdtPerCostUnit = unit ? resolveUsdtPrice(unit, tickerByMarket) : null;
+          const krwCost =
+            costInUnit !== null &&
+            typeof krwPerCostUnit === 'number' &&
+            Number.isFinite(krwPerCostUnit)
+              ? costInUnit * krwPerCostUnit
+              : null;
+          const usdtCost =
+            costInUnit !== null &&
+            typeof usdtPerCostUnit === 'number' &&
+            Number.isFinite(usdtPerCostUnit)
+              ? costInUnit * usdtPerCostUnit
+              : null;
+          const pnlKrw = krwValue !== null && krwCost !== null ? krwValue - krwCost : null;
+          const pnlUsdt = usdtValue !== null && usdtCost !== null ? usdtValue - usdtCost : null;
+          const pnlRatePct =
+            pnlKrw !== null && krwCost !== null && krwCost > 0 ? (pnlKrw / krwCost) * 100 : null;
 
           if (krwValue !== null) {
             totalKrw += krwValue;
@@ -1288,14 +1324,33 @@ server.tool(
             unpricedInUsdt.push(currency);
           }
 
-          return `- ${currency}: free=${formatNullableFixed(free, 8)}, locked=${formatNullableFixed(locked, 8)}, total=${formatNullableFixed(totalAmount, 8)}, krw_value=${formatNullableFixed(krwValue, 2)}, usdt_value=${formatNullableFixed(usdtValue, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}`;
+          if (pnlKrw !== null && krwCost !== null) {
+            totalPnlKrw += pnlKrw;
+            totalCostKrw += krwCost;
+            pnlRowsKrw += 1;
+          }
+          if (pnlUsdt !== null && usdtCost !== null) {
+            totalPnlUsdt += pnlUsdt;
+            totalCostUsdt += usdtCost;
+            pnlRowsUsdt += 1;
+          }
+
+          return `- ${currency}: free=${formatNullableFixed(free, 8)}, locked=${formatNullableFixed(locked, 8)}, total=${formatNullableFixed(totalAmount, 8)}, krw_value=${formatNullableFixed(krwValue, 2)}, usdt_value=${formatNullableFixed(usdtValue, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}, cost_krw=${formatNullableFixed(krwCost, 2)}, cost_usdt=${formatNullableFixed(usdtCost, 8)}, pnl_krw=${formatNullableFixed(pnlKrw, 2)}, pnl_usdt=${formatNullableFixed(pnlUsdt, 8)}, pnl_rate_pct=${formatNullableFixed(pnlRatePct, 2)}`;
         })
         .join('\n');
+
+      const totalPnlRatePctKrw =
+        totalCostKrw > 0 ? (totalPnlKrw / totalCostKrw) * 100 : null;
+      const totalPnlRatePctUsdt =
+        totalCostUsdt > 0 ? (totalPnlUsdt / totalCostUsdt) * 100 : null;
 
       const headerLines = [
         `- total_asset_krw=${formatNullableFixed(totalKrw, 2)}`,
         `- total_asset_usdt=${formatNullableFixed(totalUsdt, 8)}`,
         `- priced_assets=${pricedRowsKrw}/${filtered.length} (KRW), ${pricedRowsUsdt}/${filtered.length} (USDT)`,
+        `- total_unrealized_pnl_krw=${formatNullableFixed(totalPnlKrw, 2)}, total_unrealized_pnl_rate_krw_pct=${formatNullableFixed(totalPnlRatePctKrw, 2)}`,
+        `- total_unrealized_pnl_usdt=${formatNullableFixed(totalPnlUsdt, 8)}, total_unrealized_pnl_rate_usdt_pct=${formatNullableFixed(totalPnlRatePctUsdt, 2)}`,
+        `- pnl_priced_assets=${pnlRowsKrw}/${filtered.length} (KRW), ${pnlRowsUsdt}/${filtered.length} (USDT)`,
       ];
       if (unpricedInKrw.length > 0) {
         headerLines.push(`- unpriced_in_krw=${unpricedInKrw.join(', ')}`);
