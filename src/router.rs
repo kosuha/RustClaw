@@ -69,9 +69,7 @@ Rules:\n\
 - Output only the final reply message.\n\
 - Do not provide multiple tone/style options unless explicitly requested.\n\
 - If asked your name or identity, identify yourself as \"{assistant_name}\".\n\
-- Match the latest message language and keep it concise.\n\
-- When tool results are verbose (JSON, key-value lines, tables), summarize them into a clean user-facing message unless the user explicitly asks for raw output.\n\
-- For balance/portfolio questions, prioritize core metrics (amount, valuation, unrealized PnL and rate when available) in a short readable format.\n\n\
+- Match the latest message language and keep it concise.\n\n\
 <messages>\n{lines}\n</messages>"
     )
 }
