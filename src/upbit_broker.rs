@@ -789,6 +789,8 @@ fn prepare_request(request: &UpbitHttpRequest) -> Result<PreparedRequest, String
                 body_pairs.push(("identifier".to_string(), value));
             }
 
+            // Keep request-body and query-hash input in the same canonical key order.
+            body_pairs.sort_by(|left, right| left.0.cmp(&right.0));
             let body_json = pairs_to_json_object(&body_pairs)?;
 
             Ok(PreparedRequest {
