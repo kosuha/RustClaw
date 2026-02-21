@@ -508,6 +508,41 @@ function formatNullableFixed(value: number | null, digits = 8): string {
   return value.toFixed(digits);
 }
 
+function formatKrwAmount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  return `${Math.round(value).toLocaleString('ko-KR')}원`;
+}
+
+function formatSignedKrwAmount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const rounded = Math.round(value);
+  const abs = Math.abs(rounded).toLocaleString('ko-KR');
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
+  return `${sign}${abs}원`;
+}
+
+function formatUsdtAmount(value: number | null, digits = 4): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  return `${value.toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })} USDT`;
+}
+
+function formatSignedPercent(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}%`;
+}
+
 function chunkArray<T>(rows: T[], size: number): T[][] {
   if (size <= 0) {
     return [rows];
@@ -1207,6 +1242,13 @@ server.tool(
       .boolean()
       .default(true)
       .describe('If true, hide assets where both balance and locked are 0.'),
+    max_rows: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .default(10)
+      .describe('Maximum number of asset rows to render in the message.'),
   },
   async (args) => {
     try {
@@ -1263,81 +1305,111 @@ server.tool(
       const unpricedInKrw: string[] = [];
       const unpricedInUsdt: string[] = [];
 
-      const lines = filtered
-        .map((row) => {
-          const currency = (row.currency || 'UNKNOWN').trim().toUpperCase();
-          const unit = (row.unit_currency || '').trim().toUpperCase();
-          const free = asNumber(row.balance) || 0;
-          const locked = asNumber(row.locked) || 0;
-          const totalAmount = free + locked;
-          const avgBuyPriceNumber = asNumber(row.avg_buy_price);
-          const avgBuyPrice = formatFixed(row.avg_buy_price, 8);
+      const entries = filtered.map((row) => {
+        const currency = (row.currency || 'UNKNOWN').trim().toUpperCase();
+        const unit = (row.unit_currency || '').trim().toUpperCase();
+        const free = asNumber(row.balance) || 0;
+        const locked = asNumber(row.locked) || 0;
+        const totalAmount = free + locked;
+        const avgBuyPriceNumber = asNumber(row.avg_buy_price);
+        const avgBuyPrice = formatFixed(row.avg_buy_price, 8);
 
-          const krwPerUnit = resolveKrwPrice(currency, tickerByMarket);
-          const usdtPerUnit = resolveUsdtPrice(currency, tickerByMarket);
-          const krwValue =
-            typeof krwPerUnit === 'number' && Number.isFinite(krwPerUnit)
-              ? totalAmount * krwPerUnit
-              : null;
-          const usdtValue =
-            typeof usdtPerUnit === 'number' && Number.isFinite(usdtPerUnit)
-              ? totalAmount * usdtPerUnit
-              : null;
+        const krwPerUnit = resolveKrwPrice(currency, tickerByMarket);
+        const usdtPerUnit = resolveUsdtPrice(currency, tickerByMarket);
+        const krwValue =
+          typeof krwPerUnit === 'number' && Number.isFinite(krwPerUnit)
+            ? totalAmount * krwPerUnit
+            : null;
+        const usdtValue =
+          typeof usdtPerUnit === 'number' && Number.isFinite(usdtPerUnit)
+            ? totalAmount * usdtPerUnit
+            : null;
 
-          const costInUnit =
-            typeof avgBuyPriceNumber === 'number' &&
-            Number.isFinite(avgBuyPriceNumber) &&
-            avgBuyPriceNumber > 0 &&
-            totalAmount > 0
-              ? totalAmount * avgBuyPriceNumber
-              : null;
-          const krwPerCostUnit = unit ? resolveKrwPrice(unit, tickerByMarket) : null;
-          const usdtPerCostUnit = unit ? resolveUsdtPrice(unit, tickerByMarket) : null;
-          const krwCost =
-            costInUnit !== null &&
-            typeof krwPerCostUnit === 'number' &&
-            Number.isFinite(krwPerCostUnit)
-              ? costInUnit * krwPerCostUnit
-              : null;
-          const usdtCost =
-            costInUnit !== null &&
-            typeof usdtPerCostUnit === 'number' &&
-            Number.isFinite(usdtPerCostUnit)
-              ? costInUnit * usdtPerCostUnit
-              : null;
-          const pnlKrw = krwValue !== null && krwCost !== null ? krwValue - krwCost : null;
-          const pnlUsdt = usdtValue !== null && usdtCost !== null ? usdtValue - usdtCost : null;
-          const pnlRatePct =
-            pnlKrw !== null && krwCost !== null && krwCost > 0 ? (pnlKrw / krwCost) * 100 : null;
+        const costInUnit =
+          typeof avgBuyPriceNumber === 'number' &&
+          Number.isFinite(avgBuyPriceNumber) &&
+          avgBuyPriceNumber > 0 &&
+          totalAmount > 0
+            ? totalAmount * avgBuyPriceNumber
+            : null;
+        const krwPerCostUnit = unit ? resolveKrwPrice(unit, tickerByMarket) : null;
+        const usdtPerCostUnit = unit ? resolveUsdtPrice(unit, tickerByMarket) : null;
+        const krwCost =
+          costInUnit !== null &&
+          typeof krwPerCostUnit === 'number' &&
+          Number.isFinite(krwPerCostUnit)
+            ? costInUnit * krwPerCostUnit
+            : null;
+        const usdtCost =
+          costInUnit !== null &&
+          typeof usdtPerCostUnit === 'number' &&
+          Number.isFinite(usdtPerCostUnit)
+            ? costInUnit * usdtPerCostUnit
+            : null;
+        const pnlKrw = krwValue !== null && krwCost !== null ? krwValue - krwCost : null;
+        const pnlUsdt = usdtValue !== null && usdtCost !== null ? usdtValue - usdtCost : null;
+        const pnlRatePct =
+          pnlKrw !== null && krwCost !== null && krwCost > 0 ? (pnlKrw / krwCost) * 100 : null;
 
-          if (krwValue !== null) {
-            totalKrw += krwValue;
-            pricedRowsKrw += 1;
-          } else if (!unpricedInKrw.includes(currency)) {
-            unpricedInKrw.push(currency);
-          }
+        if (krwValue !== null) {
+          totalKrw += krwValue;
+          pricedRowsKrw += 1;
+        } else if (!unpricedInKrw.includes(currency)) {
+          unpricedInKrw.push(currency);
+        }
 
-          if (usdtValue !== null) {
-            totalUsdt += usdtValue;
-            pricedRowsUsdt += 1;
-          } else if (!unpricedInUsdt.includes(currency)) {
-            unpricedInUsdt.push(currency);
-          }
+        if (usdtValue !== null) {
+          totalUsdt += usdtValue;
+          pricedRowsUsdt += 1;
+        } else if (!unpricedInUsdt.includes(currency)) {
+          unpricedInUsdt.push(currency);
+        }
 
-          if (pnlKrw !== null && krwCost !== null) {
-            totalPnlKrw += pnlKrw;
-            totalCostKrw += krwCost;
-            pnlRowsKrw += 1;
-          }
-          if (pnlUsdt !== null && usdtCost !== null) {
-            totalPnlUsdt += pnlUsdt;
-            totalCostUsdt += usdtCost;
-            pnlRowsUsdt += 1;
-          }
+        if (pnlKrw !== null && krwCost !== null) {
+          totalPnlKrw += pnlKrw;
+          totalCostKrw += krwCost;
+          pnlRowsKrw += 1;
+        }
+        if (pnlUsdt !== null && usdtCost !== null) {
+          totalPnlUsdt += pnlUsdt;
+          totalCostUsdt += usdtCost;
+          pnlRowsUsdt += 1;
+        }
 
-          return `- ${currency}: free=${formatNullableFixed(free, 8)}, locked=${formatNullableFixed(locked, 8)}, total=${formatNullableFixed(totalAmount, 8)}, krw_value=${formatNullableFixed(krwValue, 2)}, usdt_value=${formatNullableFixed(usdtValue, 8)}, avg_buy_price=${avgBuyPrice}${unit ? ` ${unit}` : ''}, cost_krw=${formatNullableFixed(krwCost, 2)}, cost_usdt=${formatNullableFixed(usdtCost, 8)}, pnl_krw=${formatNullableFixed(pnlKrw, 2)}, pnl_usdt=${formatNullableFixed(pnlUsdt, 8)}, pnl_rate_pct=${formatNullableFixed(pnlRatePct, 2)}`;
+        return {
+          currency,
+          unit,
+          free,
+          locked,
+          totalAmount,
+          avgBuyPrice,
+          krwValue,
+          usdtValue,
+          krwCost,
+          usdtCost,
+          pnlKrw,
+          pnlUsdt,
+          pnlRatePct,
+        };
+      });
+
+      const sorted = entries
+        .slice()
+        .sort((left, right) => (right.krwValue ?? -1) - (left.krwValue ?? -1));
+      const visible = sorted.slice(0, args.max_rows);
+      const hiddenCount = sorted.length - visible.length;
+
+      const lines = visible
+        .map((entry) => {
+          return [
+            `• ${entry.currency}`,
+            `  보유: ${formatNullableFixed(entry.totalAmount, 8)} (가용 ${formatNullableFixed(entry.free, 8)} / 잠금 ${formatNullableFixed(entry.locked, 8)})`,
+            `  평가: ${formatKrwAmount(entry.krwValue)} / ${formatUsdtAmount(entry.usdtValue, 4)}`,
+            `  미실현: ${formatSignedKrwAmount(entry.pnlKrw)} (${formatSignedPercent(entry.pnlRatePct)})`,
+            `  평단: ${entry.avgBuyPrice}${entry.unit ? ` ${entry.unit}` : ''}`,
+          ].join('\n');
         })
-        .join('\n');
+        .join('\n\n');
 
       const totalPnlRatePctKrw =
         totalCostKrw > 0 ? (totalPnlKrw / totalCostKrw) * 100 : null;
@@ -1345,22 +1417,23 @@ server.tool(
         totalCostUsdt > 0 ? (totalPnlUsdt / totalCostUsdt) * 100 : null;
 
       const headerLines = [
-        `- total_asset_krw=${formatNullableFixed(totalKrw, 2)}`,
-        `- total_asset_usdt=${formatNullableFixed(totalUsdt, 8)}`,
-        `- priced_assets=${pricedRowsKrw}/${filtered.length} (KRW), ${pricedRowsUsdt}/${filtered.length} (USDT)`,
-        `- total_unrealized_pnl_krw=${formatNullableFixed(totalPnlKrw, 2)}, total_unrealized_pnl_rate_krw_pct=${formatNullableFixed(totalPnlRatePctKrw, 2)}`,
-        `- total_unrealized_pnl_usdt=${formatNullableFixed(totalPnlUsdt, 8)}, total_unrealized_pnl_rate_usdt_pct=${formatNullableFixed(totalPnlRatePctUsdt, 2)}`,
-        `- pnl_priced_assets=${pnlRowsKrw}/${filtered.length} (KRW), ${pnlRowsUsdt}/${filtered.length} (USDT)`,
+        `총 평가금액: ${formatKrwAmount(totalKrw)} (${formatUsdtAmount(totalUsdt, 4)})`,
+        `총 미실현손익: ${formatSignedKrwAmount(totalPnlKrw)} (${formatSignedPercent(totalPnlRatePctKrw)})`,
+        `평가 가능 자산: ${pricedRowsKrw}/${filtered.length}개 (KRW), ${pricedRowsUsdt}/${filtered.length}개 (USDT)`,
+        `손익 계산 자산: ${pnlRowsKrw}/${filtered.length}개 (KRW), ${pnlRowsUsdt}/${filtered.length}개 (USDT)`,
       ];
       if (unpricedInKrw.length > 0) {
-        headerLines.push(`- unpriced_in_krw=${unpricedInKrw.join(', ')}`);
+        headerLines.push(`KRW 환산 불가: ${unpricedInKrw.join(', ')}`);
       }
       if (unpricedInUsdt.length > 0) {
-        headerLines.push(`- unpriced_in_usdt=${unpricedInUsdt.join(', ')}`);
+        headerLines.push(`USDT 환산 불가: ${unpricedInUsdt.join(', ')}`);
+      }
+      if (hiddenCount > 0) {
+        headerLines.push(`표시 생략: ${hiddenCount}개 자산 (평가금액 순 상위 ${args.max_rows}개만 표시)`);
       }
 
       return {
-        content: [{ type: 'text' as const, text: `Upbit balances summary:\n${headerLines.join('\n')}\n\nUpbit balances by ticker:\n${lines}` }],
+        content: [{ type: 'text' as const, text: `[업비트 잔고 요약]\n${headerLines.join('\n')}\n\n[자산별 상세]\n${lines}` }],
       };
     } catch (error) {
       return upbitToolError('Failed to fetch Upbit balances', error);
